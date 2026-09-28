@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+
+menu "LoongArch Options"
+	depends on LOONGARCH
+
+config ARCH
+	string
+	default "loongarch"
+
+# LoongArch has a single exception entry (ECFG.VS == 0) and dispatches
+# interrupts through the software ISR table, so no vector table is needed.
+config GEN_ISR_TABLES
+	default y
+
+config GEN_IRQ_VECTOR_TABLE
+	default n
+
+config GEN_SW_ISR_TABLE
+	default y
+
+config NUM_IRQS
+	int
+	default 13
+
+# 64-bit code with a full register frame needs a bit more stack
+config MAIN_STACK_SIZE
+	default 2048
+
+# Except interrupts are not stacked on a separate stack: struct arch_esf
+# (320 bytes) plus the ISR call chain is built on the stack of the
+# interrupted thread, so the idle thread needs room for at least one frame.
+config IDLE_STACK_SIZE
+	default 1024
+
+config ISR_STACK_SIZE
+	default 2048
+
+config LOONGARCH_LSX
+	bool "Use LoongArch SIMD eXtension"
+	default n
+	depends on FPU
+	help
+	  This option enables the 128bit SIMD Support for LoongArch.
+
+config LOONGARCH_LASX
+	bool "Use LoongArch Advanced SIMD eXtension"
+	default n
+	depends on FPU
+	help
+	  This option enables the 256bit SIMD Support for LoongArch.
+
+# IRQ offload is delivered through a software interrupt. ESTAT.IS[1:0] are
+# writable by software (in addition to being readable), so either of them can
+# be used to raise an interrupt on demand.
+config LOONGARCH_IRQ_OFFLOAD_IRQ
+	int "Interrupt line used for IRQ offload"
+	default 0
+	range 0 1
+	depends on IRQ_OFFLOAD
+	help
+	  Software interrupt line (0 or 1) that is raised by arch_irq_offload()
+	  to run a routine in interrupt context.
+
+endmenu

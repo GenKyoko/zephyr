@@ -32,3 +32,6 @@ archs:
   - name: rx
     path: rx
     full_name: Renesas RX
+  - name: loongarch
+    path: loongarch
+    full_name: LoongArch

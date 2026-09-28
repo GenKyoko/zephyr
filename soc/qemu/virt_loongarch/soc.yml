@@ -1,0 +1,4 @@
+family:
+- name: qemu_virt_loongarch
+  socs:
+  - name: qemu_virt_loongarch64

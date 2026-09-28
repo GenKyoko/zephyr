@@ -1,0 +1,6 @@
+board:
+  name: qemu_loongarch64
+  full_name: QEMU Emulation for LoongArch64
+  vendor: qemu
+  socs:
+    - name: qemu_virt_loongarch64

@@ -1,0 +1,15 @@
+identifier: qemu_loongarch64
+name: QEMU Emulation for LoongArch64
+type: qemu
+simulation:
+  - name: qemu
+arch: loongarch
+toolchain:
+  - zephyr
+ram: 65536
+flash: 0
+testing:
+  default: true
+  ignore_tags:
+    - net
+    - bluetooth

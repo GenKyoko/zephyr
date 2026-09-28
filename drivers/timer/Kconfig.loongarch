@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config LOONGARCH_CONSTANT_TIMER
+	bool "LoongArch constant timer"
+	default y
+	depends on LOONGARCH
+	select TICKLESS_CAPABLE
+	select TIMER_HAS_64BIT_CYCLE_COUNTER
+	help
+	  This module implements the LoongArch constant frequency timer as the
+	  Zephyr system clock. The countdown timer is programmed through
+	  CSR.TCFG and acked through CSR.TICLR, while the stable counter
+	  (rdtime.d) provides the free-running 64-bit cycle count.

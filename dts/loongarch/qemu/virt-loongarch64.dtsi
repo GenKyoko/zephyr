@@ -1,0 +1,55 @@
+/*
+ * Copyright (c) 2026 Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * QEMU LoongArch 'virt' machine.
+ *
+ * The image is loaded as an ELF file by QEMU (-kernel) and executed in
+ * direct address translation mode, so the memory layout below uses physical
+ * addresses:
+ *
+ *   0x0000_0000 - 0x000f_ffff  reserved (QEMU boot info / command line)
+ *   0x0020_0000 - 0x03ff_ffff  Zephyr RAM (as defined by CONFIG_SRAM_*)
+ *   0x1fe0_01e0                NS16550 compatible UART0
+ */
+
+/dts-v1/;
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	model = "qemu-loongarch64-virt";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "loongson,la464";
+			reg = <0>;
+		};
+	};
+
+	ram0: memory@200000 {
+		device_type = "memory";
+		compatible = "mmio-sram";
+		reg = <0x0 0x00200000 0x0 0x03e00000>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+
+		uart0: serial@1fe001e0 {
+			compatible = "ns16550";
+			reg = <0x0 0x1fe001e0 0x0 0x100>;
+			reg-shift = <0>;
+			clock-frequency = <3686400>;
+			current-speed = <115200>;
+			status = "disabled";
+		};
+	};
+};

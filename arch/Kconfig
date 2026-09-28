@@ -181,6 +181,16 @@ config RX
 	help
 	  Renesas RX architecture
 
+config LOONGARCH
+	bool
+	select ARCH_IS_SET
+	select 64BIT
+	select USE_SWITCH
+	select USE_SWITCH_SUPPORTED
+	select ATOMIC_OPERATIONS_C
+	help
+	  LoongArch architecture
+
 config ARCH_IS_SET
 	bool
 	help

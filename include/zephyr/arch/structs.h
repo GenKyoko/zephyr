@@ -33,6 +33,8 @@
 #include <zephyr/arch/x86/ia32/structs.h>
 #elif defined(CONFIG_XTENSA)
 #include <zephyr/arch/xtensa/structs.h>
+// #elif defined(CONFIG_LOONGARCH)
+// #include <zephyr/arch/loongarch/structs.h>
 #else
 
 /* Default definitions when no architecture specific definitions exist. */

@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_FAMILY_QEMU_VIRT_LOONGARCH
+
+# The constant timer runs at 100 MHz on the QEMU 'virt' machine
+# (CPUCFG.4 = 100000000, CPUCFG.5 = mul 1 / div 1)
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 100000000
+
+config LOONGARCH_CONSTANT_TIMER
+	default y
+
+endif # SOC_FAMILY_QEMU_VIRT_LOONGARCH

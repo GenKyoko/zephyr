@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_FAMILY_QEMU_VIRT_LOONGARCH
+	bool
+
+config SOC_FAMILY
+	default "qemu_virt_loongarch" if SOC_FAMILY_QEMU_VIRT_LOONGARCH
+
+rsource "*/Kconfig.soc"
