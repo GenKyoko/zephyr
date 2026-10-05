@@ -1,0 +1,262 @@
+/*
+ * Copyright (c) 2026 Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Loongson 2K0300 (LS2K0300, "ls2k300" family) - single LA264 core.
+ *
+ * Physical memory map:
+ *
+ *   0x9000_0000_0000_0000  DDR (size is board specific)
+ *   0x1600_0000            SoC peripherals (LIO / APB)
+ *   0x1640_0000            legacy ISA window
+ *
+ * Interrupts are numbered in a flat, SoC wide space:
+ *
+ *   0..15   CPU interrupt lines (ESTAT.IS[15:0], enabled through ECFG.LIE)
+ *   16..47  LIOINTC0 children 0..31
+ *   48..79  LIOINTC1 children 0..31
+ *
+ * Peripheral nodes therefore carry the *flat* number in their "interrupts"
+ * entry (e.g. <16 1> is child 0 of LIOINTC0 with priority 1).
+ */
+
+/dts-v1/;
+
+#include <zephyr/dt-bindings/clock/loongson,ls2k0300-clk.h>
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	model = "loongson,ls2k0300";
+	compatible = "loongson,ls2k0300";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "loongson,la264";
+			reg = <0>;
+		};
+	};
+
+	cpuintc: interrupt-controller {
+		compatible = "loongson,cpu-interrupt-controller";
+		interrupt-controller;
+		#interrupt-cells = <2>;
+	};
+
+	soc {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		compatible = "simple-bus";
+		ranges;
+
+		/*
+		 * The 120 MHz reference oscillator and the clock controller.
+		 *
+		 * The controller is driven read only: u-boot locks the PLLs before
+		 * it hands over, so a consumer asks for the resulting rate instead
+		 * of carrying a hard coded frequency in its node:
+		 *
+		 *     clocks = <&clk LS2K0300_CLK_APB>;
+		 *
+		 * That matters most for the console UART, whose baud rate divisor
+		 * is CLKin / (16 * baud) and which therefore needs the real APB
+		 * clock (200 MHz on this board), not a guess.
+		 */
+		osc_clk: clock-osc {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <120000000>;
+		};
+
+		clk: clock-controller@8000000016000400 {
+			compatible = "loongson,ls2k0300-clk";
+			reg = <0x80000000 0x16000400 0x0 0x40>;
+			clocks = <&osc_clk>;
+			clock-names = "ref_clk";
+			#clock-cells = <1>;
+			status = "okay";
+		};
+
+		/*
+		 * Pin mux: the GPIO_CFG registers at 0x1600_0490, two bits per
+		 * GPIO (16 pins per register). A state lists (pin, function)
+		 * pairs, see dts/bindings/pinctrl/loongson,ls2k0300-pinmux.yaml.
+		 */
+		pinctrl: pin-controller@8000000016000490 {
+			compatible = "loongson,ls2k0300-pinmux";
+			reg = <0x80000000 0x16000490 0x0 0x20>;
+			status = "okay";
+
+			/*
+			 * Console pins: GPIO40 = uart0_rx, GPIO41 = uart0_tx,
+			 * both on their primary function. This is the same setting
+			 * the vendor device tree writes as
+			 * "pinctrl-single,bits = <0x8 0x000f0000 0x000f0000>".
+			 *
+			 * Needed because u-boot only configures what it drives:
+			 * measured on this board uart0_rx was still left in the
+			 * GPIO setting, so the console transmitted but never
+			 * received and the shell could not be typed into.
+			 */
+			uart0_rx_default: uart0_rx_default {
+				pinmux = <40 3>;
+			};
+
+			uart0_tx_default: uart0_tx_default {
+				pinmux = <41 3>;
+			};
+		};
+
+		/*
+		 * LIOINTC0: 32 peripheral lines aggregated onto CPU line 2
+		 * (IP2). Children are numbered 16..47.
+		 */
+		liointc0: interrupt-controller@8000000016001400 {
+			compatible = "loongson,liointc-2.0";
+			reg = <0x80000000 0x16001400 0x0 0x40>,
+			      <0x80000000 0x16001040 0x0 0x8>;
+			reg-names = "main", "isr0";
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupt-parent = <&cpuintc>;
+			interrupts = <2 0>;
+			loongson,parent-int-bitmap = <0xffffffff 0x0 0x0 0x0>;
+			zephyr,irq-base = <16>;
+		};
+
+		/*
+		 * LIOINTC1: 32 peripheral lines aggregated onto CPU line 4
+		 * (IP4). Children are numbered 48..79.
+		 */
+		liointc1: interrupt-controller@8000000016001440 {
+			compatible = "loongson,liointc-2.0";
+			reg = <0x80000000 0x16001440 0x0 0x40>,
+			      <0x80000000 0x16001048 0x0 0x8>;
+			reg-names = "main", "isr0";
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupt-parent = <&cpuintc>;
+			interrupts = <4 0>;
+			loongson,parent-int-bitmap = <0x0 0x0 0xffffffff 0x0>;
+			zephyr,irq-base = <48>;
+		};
+
+		/*
+		 * GPIO controller: 106 byte-controlled pins, split into banks
+		 * of at most 32 pins so that Zephyr pin numbers stay within
+		 * the 32 bit port mask of the GPIO API. The interrupt part of
+		 * the block is not modelled yet.
+		 *
+		 * Bank N covers IP pins (N * 32) .. (N * 32 + ngpios - 1),
+		 * e.g. the backlight/user LED line GPIO43 is <&gpio1 11>.
+		 *
+		 * All banks share the one 4 KiB register block, so they carry the
+		 * same reg value and the unit addresses in the node names exist
+		 * only to keep the names unique. dtc flags that as a
+		 * simple_bus_reg warning; the alternative would be to encode an
+		 * address per bank that the hardware does not have.
+		 */
+		gpio0: gpio@8000000016104000 {
+			compatible = "loongson,ls2k0300-gpio";
+			reg = <0x80000000 0x16104000 0x0 0x1000>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			loongson,pin-base = <0>;
+			status = "disabled";
+		};
+
+		gpio1: gpio@8000000016104001 {
+			compatible = "loongson,ls2k0300-gpio";
+			reg = <0x80000000 0x16104000 0x0 0x1000>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			loongson,pin-base = <32>;
+			status = "disabled";
+		};
+
+		gpio2: gpio@8000000016104002 {
+			compatible = "loongson,ls2k0300-gpio";
+			reg = <0x80000000 0x16104000 0x0 0x1000>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <32>;
+			loongson,pin-base = <64>;
+			status = "disabled";
+		};
+
+		gpio3: gpio@8000000016104003 {
+			compatible = "loongson,ls2k0300-gpio";
+			reg = <0x80000000 0x16104000 0x0 0x1000>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <10>;
+			loongson,pin-base = <96>;
+			status = "disabled";
+		};
+
+		/*
+		 * MMIO is reached through the uncached direct map window
+		 * (0x8000_0000_0000_0000 | physical address), which reset.S
+		 * programs as DMW0. The plain physical address 0x1610_0000 is
+		 * not inside any direct map window, so using it would need a TLB
+		 * entry the kernel does not own and would fault.
+		 */
+		uart0: serial@8000000016100000 {
+			compatible = "ns16550";
+			reg = <0x80000000 0x16100000 0x0 0x10>;
+			reg-shift = <0>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			current-speed = <115200>;
+			interrupt-parent = <&liointc0>;
+			interrupts = <16 1>;
+			pinctrl-0 = <&uart0_rx_default &uart0_tx_default>;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+
+		uart1: serial@8000000016100400 {
+			compatible = "ns16550";
+			reg = <0x80000000 0x16100400 0x0 0x10>;
+			reg-shift = <0>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			current-speed = <115200>;
+			interrupt-parent = <&liointc0>;
+			interrupts = <17 1>;
+			status = "disabled";
+		};
+
+		uart2: serial@8000000016100800 {
+			compatible = "ns16550";
+			reg = <0x80000000 0x16100800 0x0 0x10>;
+			reg-shift = <0>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			current-speed = <115200>;
+			interrupt-parent = <&liointc0>;
+			interrupts = <18 1>;
+			status = "disabled";
+		};
+
+		/*
+		 * uart3..uart5 share LIOINTC0 line 2 and uart6..uart9 (except
+		 * the console capable uart6 which has line 3) share lines as
+		 * wired by the SoC; only the lines that are actually usable as
+		 * individual interrupt sources are described here.
+		 */
+		uart6: serial@8000000016101800 {
+			compatible = "ns16550";
+			reg = <0x80000000 0x16101800 0x0 0x10>;
+			reg-shift = <0>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			current-speed = <115200>;
+			interrupt-parent = <&liointc0>;
+			interrupts = <19 1>;
+			status = "disabled";
+		};
+	};
+};

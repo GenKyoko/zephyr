@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 (and the other 2K series SoCs sharing the IP) clock
+  controller.
+
+  The controller is the register block at 0x1600_0400 holding the three PLL
+  configurations (NODE, DDR, PIX), the per bus frequency scalers and the PLL
+  output enables. It is driven read only: the boot loader has already locked
+  the PLLs, so the driver reports the resulting rates and gates the output
+  enables but never sets a rate.
+
+  Clock consumers reference it with
+
+    clocks = <&clk LS2K0300_CLK_APB>;
+
+  where the cell is one of the clock IDs of
+  include/zephyr/dt-bindings/clock/loongson,ls2k0300-clk.h. The reference
+  oscillator is the parent clock (a fixed-clock in the SoC device tree).
+
+compatible: "loongson,ls2k0300-clk"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: true
+
+clock-cells:
+  - clkid

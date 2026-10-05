@@ -1,0 +1,4 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_LS2K300_PAI

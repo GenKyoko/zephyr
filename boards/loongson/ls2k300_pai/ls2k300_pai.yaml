@@ -1,0 +1,8 @@
+identifier: ls2k300_pai
+name: Loongson 2K0300 PAI (LS2K300-PAI)
+type: mcu
+arch: loongarch
+toolchain:
+  - zephyr
+ram: 262144
+flash: 0

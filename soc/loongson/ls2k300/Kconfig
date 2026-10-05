@@ -1,0 +1,95 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_FAMILY_LS2K300
+	select LOONGARCH
+	select GEN_SW_ISR_TABLE
+
+if SOC_FAMILY_LS2K300
+
+rsource "*/Kconfig"
+
+config LOONGARCH_UBOOT_UIMAGE
+	bool "Generate a u-boot legacy uImage (zephyr.uImage)"
+	select BUILD_OUTPUT_BIN
+	default y
+	help
+	  Emit an additional zephyr.uImage in the u-boot legacy image format so
+	  that the 2K0300 boards can be booted with the same flow as the vendor
+	  kernel, e.g.
+
+	    tftpboot ${loadaddr} zephyr.uImage
+	    bootm ${loadaddr}
+
+	  u-boot calls the LoongArch architecture "loongarch" in its image
+	  architecture table, so a plain legacy uImage works for LoongArch too.
+	  The header is produced by soc/loongson/ls2k300/gen_uimage.py, which
+	  takes the load address and the entry point from zephyr.elf; u-boot
+	  relocates the payload to the load address stored in the header, so
+	  the file can be transferred to any free address first.
+
+config LS2K0300_RX_CHECK
+	bool "Console receive interrupt self check"
+	help
+	  Run one non blocking check three seconds after the application starts,
+	  from a work queue item so it cannot starve anything:
+
+	    1. print IER / IIR / LSR plus the LIOINTC enable status, the pending
+	       register and ESTAT,
+	    2. put the console UART into internal loopback (MCR bit 4) and write
+	       one byte to it,
+
+	  so the byte comes back as received data. If the receive interrupt path
+	  works the driver ISR takes it immediately and LSR.DR reads 0 and ESTAT
+	  has long settled; if the byte is still sitting in the FIFO with ESTAT
+	  clear, then the UART is not asking for an interrupt at all, and if
+	  ESTAT is set while the byte stays, the dispatch is the break.
+
+	  Needed because every static check said the path was enabled - IER bit 0
+	  set, LIOINTC child 0 enabled, ECFG bit 2 set, paging off - while the
+	  shell never received a character.
+
+config LS2K0300_CONSOLE_GUARD
+	bool "Watch the console UART and repair it"
+	default y
+	help
+	  Check the console UART once a second from the system work queue and
+	  repair the states that make the shell look dead while the rest of the
+	  system keeps running:
+
+	    - the receive pin no longer on function 3, i.e. moved out of uart0_rx
+	      by something writing the pin mux field (the SoC itself comes up
+	      with the pin in its GPIO setting). The console keeps printing
+	      because the transmitter's field is still right, and nothing at all
+	      arrives. The field is written back.
+	    - the UART left in internal loopback (MCR.LOOP set, and OUT2 clear
+	      with it): the receiver is off the RX pin, so the keyboard never
+	      arrives, while the shell's own output is fed straight back into the
+	      receiver. MCR is written back to DTR | RTS | OUT2.
+	    - a received byte that nobody serves for two ticks: a receive
+	      interrupt that was lost on the way to the driver. IER is toggled so
+	      the UART raises the request again.
+	    - shell output queued (IER.TBE set) while the transmitter sits idle
+	      (THRE set) for two ticks: the empty-transmitter request never came.
+	      IER.TBE is toggled so the UART raises it.
+	    - a transmitter that stays busy for three ticks: both FIFOs are
+	      cleared and the modem lines are written back, the only thing left
+	      to try when the shift register is stuck.
+
+	  The guard only writes when it repairs something and reports nothing:
+	  a console error cannot be announced over the console itself, and a
+	  repaired console needs no announcement. Each repair is recorded with
+	  LOG_DBG, which the default runtime log level keeps out of the console.
+
+	  Note: the bring-up receive check (LS2K0300_RX_CHECK) uses internal
+	  loopback on purpose and can trip this guard; keep the two apart.
+
+config LS2K0300_IRQ_DIAG
+	bool "Bring-up: dump the interrupt CSRs and time a few sleeps"
+	default n
+	help
+	  Print CRMD/PRMD/ECFG/ESTAT over the console at APPLICATION init and then
+	  sleep three times, so interrupt delivery can be checked from the console
+	  alone. A bring-up aid: keep it off in production images.
+
+endif # SOC_FAMILY_LS2K300

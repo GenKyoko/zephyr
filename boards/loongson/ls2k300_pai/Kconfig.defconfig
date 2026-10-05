@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_LS2K300_PAI
+
+# The 2K0300 is booted by the on-chip boot ROM / u-boot from SPI NOR or eMMC
+# and the image is executed from DDR, so there is no XIP flash region.
+# A raw binary is emitted as well because u-boot loads plain images
+# (tftpboot/fatload/ext4load + go/bootm).
+config BUILD_OUTPUT_BIN
+	default y
+
+endif # BOARD_LS2K300_PAI

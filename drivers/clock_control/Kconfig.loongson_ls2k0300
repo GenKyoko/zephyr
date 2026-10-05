@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config CLOCK_CONTROL_LOONGSON_LS2K0300
+	bool "Loongson 2K0300 clock controller"
+	default y
+	depends on DT_HAS_LOONGSON_LS2K0300_CLK_ENABLED
+	help
+	  Clock controller of the Loongson 2K0300 (LS2K300 family). It reports
+	  the frequencies the SoC PLLs and the per bus frequency scalers are
+	  running at, so device trees do not have to hard code them, and it
+	  gates the PLL output enables. Setting rates is not supported: the PLLs
+	  are locked by the boot loader and are deliberately left alone.
+
+if CLOCK_CONTROL_LOONGSON_LS2K0300
+
+config CLOCK_CONTROL_LOONGSON_LS2K0300_INIT_PRIORITY
+	int "Loongson 2K0300 clock controller init priority"
+	default 35
+	help
+	  The clock controller asks its parent reference clock (a fixed-clock,
+	  which initialises at CONFIG_CLOCK_CONTROL_INIT_PRIORITY) for its rate,
+	  so it has to come after it, and before the devices that ask the
+	  controller for their rate - in particular the console NS16550 at
+	  CONFIG_SERIAL_INIT_PRIORITY (50 by default).
+
+endif # CLOCK_CONTROL_LOONGSON_LS2K0300

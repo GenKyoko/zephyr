@@ -30,10 +30,33 @@ struct _callee_saved {
 };
 typedef struct _callee_saved _callee_saved_t;
 
+#if defined(CONFIG_FPU_SHARING)
+/*
+ * Floating point context, saved and restored by z_loongarch_switch() when
+ * CONFIG_FPU_SHARING is enabled: the 32 floating point registers, the
+ * control/status register fcsr0 (rounding mode, exception enables and
+ * accumulated flags) and the eight condition flag registers fcc0-fcc7.
+ *
+ * The condition flags have to be part of the context as well, since a
+ * floating point comparison and the conditional branch consuming its result
+ * may be separated by a context switch.
+ */
+struct z_loongarch_fp_context {
+	unsigned long f[32];	/* $f0   - $f31 */
+	unsigned char fcc[8];	/* $fcc0 - $fcc7, one byte each */
+	unsigned int fcsr;	/* $fcsr0 */
+};
+
+struct _thread_arch {
+	struct z_loongarch_fp_context fp_ctx;
+};
+#else
 struct _thread_arch {
 	/* Keep the structure non-empty for C/C++ size compatibility. */
 	uint8_t unused;
 };
+#endif /* CONFIG_FPU_SHARING */
+
 typedef struct _thread_arch _thread_arch_t;
 
 #endif /* _ASMLANGUAGE */

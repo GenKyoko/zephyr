@@ -63,25 +63,82 @@ int z_loongarch_enter_irq(unsigned int int_vec)
 	return _current_cpu->nested == 0U;
 }
 
+/*
+ * Secondary interrupt controllers (e.g. the Loongson LIOINTC) own the IRQ
+ * numbers above the CPU lines. They register themselves at init so that the
+ * generic irq_enable()/irq_disable() APIs are routed to them.
+ */
+#define LOONGARCH_NUM_SUB_INTC 4
+
+static const struct z_loongarch_sub_intc *sub_intcs[LOONGARCH_NUM_SUB_INTC];
+
+int z_loongarch_sub_intc_register(const struct z_loongarch_sub_intc *intc)
+{
+	for (unsigned int i = 0; i < ARRAY_SIZE(sub_intcs); i++) {
+		if (sub_intcs[i] == NULL) {
+			sub_intcs[i] = intc;
+			return 0;
+		}
+	}
+
+	return -ENOMEM;
+}
+
+static const struct z_loongarch_sub_intc *sub_intc_lookup(unsigned int irq)
+{
+	for (unsigned int i = 0; i < ARRAY_SIZE(sub_intcs); i++) {
+		const struct z_loongarch_sub_intc *intc = sub_intcs[i];
+
+		if ((intc != NULL) && (irq >= intc->base) &&
+		    (irq < (intc->base + intc->count))) {
+			return intc;
+		}
+	}
+
+	return NULL;
+}
+
 void arch_irq_enable(unsigned int irq)
 {
 	unsigned int key = arch_irq_lock();
+	const struct z_loongarch_sub_intc *intc = sub_intc_lookup(irq);
 
-	loongarch_csrxchg(LOONGARCH_ECFG_LIE(irq), LOONGARCH_ECFG_LIE(irq),
-			  LOONGARCH_CSR_ECFG);
+	if (intc != NULL) {
+		intc->ops->enable(intc->ctx, irq - intc->base);
+	} else if (irq < LOONGARCH_CPU_IRQ_NUM) {
+		loongarch_csrxchg(LOONGARCH_ECFG_LIE(irq), LOONGARCH_ECFG_LIE(irq),
+				  LOONGARCH_CSR_ECFG);
+	}
+
 	arch_irq_unlock(key);
 }
 
 void arch_irq_disable(unsigned int irq)
 {
 	unsigned int key = arch_irq_lock();
+	const struct z_loongarch_sub_intc *intc = sub_intc_lookup(irq);
 
-	loongarch_csrxchg(0UL, LOONGARCH_ECFG_LIE(irq), LOONGARCH_CSR_ECFG);
+	if (intc != NULL) {
+		intc->ops->disable(intc->ctx, irq - intc->base);
+	} else if (irq < LOONGARCH_CPU_IRQ_NUM) {
+		loongarch_csrxchg(0UL, LOONGARCH_ECFG_LIE(irq), LOONGARCH_CSR_ECFG);
+	}
+
 	arch_irq_unlock(key);
 }
 
 int arch_irq_is_enabled(unsigned int irq)
 {
+	const struct z_loongarch_sub_intc *intc = sub_intc_lookup(irq);
+
+	if (intc != NULL) {
+		return intc->ops->is_enabled(intc->ctx, irq - intc->base);
+	}
+
+	if (irq >= LOONGARCH_CPU_IRQ_NUM) {
+		return 0;
+	}
+
 	return (loongarch_csr_read(LOONGARCH_CSR_ECFG) & LOONGARCH_ECFG_LIE(irq)) != 0U;
 }
 

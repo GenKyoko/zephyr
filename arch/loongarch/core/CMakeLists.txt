@@ -13,4 +13,5 @@ zephyr_library_sources(
   thread.c
 )
 
+zephyr_library_sources_ifdef(CONFIG_FPU_SHARING fpu.c)
 zephyr_library_sources_ifdef(CONFIG_IRQ_OFFLOAD irq_offload.c)

@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 pin mux.
+
+  The controller is the GPIO_CFG register block at 0x1600_0490. Every GPIO pin
+  owns two bits there (16 pins per 32 bit register). A state node describes
+  exactly one pin, and a consumer references one state per pin:
+
+    &pinctrl {
+      uart0_rx_default: uart0_rx_default { pinmux = <40 3>; };
+      uart0_tx_default: uart0_tx_default { pinmux = <41 3>; };
+    };
+
+    &uart0 {
+      pinctrl-0 = <&uart0_rx_default &uart0_tx_default>;
+      pinctrl-names = "default";
+    };
+
+  The function cell is written into the pin's two bit field:
+    0 GPIO, 1 first alternate, 2 second alternate, 3 primary function.
+
+  One pin per state keeps the devicetree cell indices literal, which the "pinmux"
+  parsing in soc/loongson/ls2k300/pinctrl_soc.h relies on.
+
+compatible: "loongson,ls2k0300-pinmux"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+child-binding:
+  description: |
+    A pin mux state: one (GPIO number, function value) pair.
+
+  properties:
+    pinmux:
+      type: array
+      required: true
+      description: |
+        One (pin, function) pair, e.g. <40 3> for GPIO40 on its primary
+        function. The function value configures the pin's two bit field in the
+        GPIO_CFG registers.

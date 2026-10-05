@@ -44,6 +44,15 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack,
 	stack_init->csr_era = (unsigned long)z_thread_entry;
 	stack_init->csr_prmd = LOONGARCH_PRMD_PIE;
 
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * A new thread starts with an empty floating point context: all
+	 * registers zero, no exception flags and the default rounding mode.
+	 * z_loongarch_switch() restores it on the first switch to the thread.
+	 */
+	memset(&thread->arch.fp_ctx, 0, sizeof(thread->arch.fp_ctx));
+#endif /* CONFIG_FPU_SHARING */
+
 	thread->callee_saved.sp = (unsigned long)stack_init;
 
 	/* Where z_loongarch_switch() returns to for a brand new thread */

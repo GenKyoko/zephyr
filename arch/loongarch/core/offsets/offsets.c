@@ -22,6 +22,13 @@ GEN_OFFSET_SYM(_callee_saved_t, s6);
 GEN_OFFSET_SYM(_callee_saved_t, s7);
 GEN_OFFSET_SYM(_callee_saved_t, s8);
 
+#if defined(CONFIG_FPU_SHARING)
+/* Floating point context offsets, used by the context switch */
+GEN_OFFSET_STRUCT(_thread_arch, fp_ctx);
+GEN_OFFSET_STRUCT(z_loongarch_fp_context, fcc);
+GEN_OFFSET_STRUCT(z_loongarch_fp_context, fcsr);
+#endif /* CONFIG_FPU_SHARING */
+
 /* struct arch_esf member offsets */
 GEN_OFFSET_STRUCT(arch_esf, regs);
 GEN_OFFSET_STRUCT(arch_esf, orig_a0);

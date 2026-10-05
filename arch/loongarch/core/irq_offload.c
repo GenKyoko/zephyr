@@ -3,30 +3,29 @@
  *
  * LoongArch IRQ offload.
  *
- * A software interrupt is used to run a routine in interrupt context. The
- * pending state of ESTAT.IS[1:0] is owned by software: it is raised by
- * writing a 1 and acknowledged by writing a 0 (LoongArch reference manual,
- * sections 6.1.2 and 7.4.6), so z_loongarch_enter_irq() clears the line
- * before dispatching the handler and no explicit end-of-interrupt is needed
- * here.
+ * The offloaded routine has to run synchronously, in exception context. That
+ * is done by trapping through BREAK, which the CPU takes immediately: the
+ * software interrupts (ESTAT.IS[1:0]) are only reported to the interrupt
+ * logic and - at least under emulation - are not guaranteed to be taken as
+ * soon as CRMD.IE is set. The MIPS port relies on the same idea using the
+ * syscall instruction.
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/kernel_structs.h>
 #include <kernel_internal.h>
-#include <zephyr/irq.h>
+#include <kswap.h>
+#include <zephyr/arch/exception.h>
 #include <zephyr/irq_offload.h>
-#include <loongarch/csr.h>
 
 static volatile irq_offload_routine_t offload_routine;
 static volatile const void *offload_param;
 
 /*
- * Called from z_loongarch_enter_irq().
+ * Called from the BREAK exception entry, see core/isr.S.
  *
- * The offload routine pointer is cleared before it is invoked so that a
- * fault inside the offloaded code does not cause it to be re-run by the
- * fault handler.
+ * The routine pointer is cleared before it is invoked so that a fault inside
+ * the offloaded code does not cause it to be re-run by the fault handler.
  */
 void z_irq_do_offload(void)
 {
@@ -42,6 +41,33 @@ void z_irq_do_offload(void)
 	tmp((const void *)offload_param);
 }
 
+/*
+ * Exception entry helper, returns non-zero when the outermost exception
+ * handler returned, i.e. when the caller has to run the rescheduling check.
+ */
+int z_loongarch_enter_offload(struct arch_esf *esf)
+{
+	/* ERA holds the address of the BREAK instruction itself (manual
+	 * section 6.3.3): skip it so that ertn resumes right after the trap.
+	 */
+	esf->csr_era += 4;
+
+	/* The routine runs in interrupt context: keep the nesting counter in
+	 * sync so that arch_is_in_isr() reports it.
+	 */
+	_current_cpu->nested++;
+
+	z_irq_do_offload();
+
+	_current_cpu->nested--;
+
+	if (IS_ENABLED(CONFIG_STACK_SENTINEL)) {
+		z_check_stack_sentinel();
+	}
+
+	return _current_cpu->nested == 0U;
+}
+
 void arch_irq_offload(irq_offload_routine_t routine, const void *parameter)
 {
 	unsigned int key = arch_irq_lock();
@@ -49,25 +75,15 @@ void arch_irq_offload(irq_offload_routine_t routine, const void *parameter)
 	offload_routine = routine;
 	offload_param = parameter;
 
-	/* Raise the software interrupt; it is taken as soon as interrupts are
-	 * enabled again below.
-	 */
-	loongarch_csrxchg(LOONGARCH_ESTAT_IS(CONFIG_LOONGARCH_IRQ_OFFLOAD_IRQ),
-			  LOONGARCH_ESTAT_IS(CONFIG_LOONGARCH_IRQ_OFFLOAD_IRQ),
-			  LOONGARCH_CSR_ESTAT);
+	/* Synchronously trap into exception context */
+	__asm__ volatile("break 0");
 
 	arch_irq_unlock(key);
 }
 
-static void irq_offload_isr(const void *arg)
-{
-	ARG_UNUSED(arg);
-
-	z_irq_do_offload();
-}
-
 void arch_irq_offload_init(void)
 {
-	IRQ_CONNECT(CONFIG_LOONGARCH_IRQ_OFFLOAD_IRQ, 0, irq_offload_isr, NULL, 0);
-	irq_enable(CONFIG_LOONGARCH_IRQ_OFFLOAD_IRQ);
+	/* Nothing to set up: BREAK needs no interrupt line or handler table
+	 * entry, the exception entry dispatches it directly.
+	 */
 }

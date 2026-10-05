@@ -1,0 +1,106 @@
+/*
+ * Copyright (c) 2026 Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Loongson 2K0300 PAI ("LS2K300-PAI") development board.
+ *
+ * DDR starts at 0x9000_0000_0000_0000. The board is booted by u-boot, which
+ * places the SPL / its own runtime in the upper part of the first 256 MB
+ * window (CONFIG_SPL_TEXT_BASE = 0x9000_0000_0900_0000,
+ * CONFIG_SYS_TEXT_BASE = 0x9000_0000_0EC0_0000).
+ *
+ * The board u-boot hands over with CRMD=0 (paging disabled, no direct map
+ * window). The uImage carries the 32 bit entry point 0x0300_1844, which
+ * u-boot resolves through the cached 0x9 window, so the image has to be
+ * transferred to physical 0x0300_0000 ("tftpboot 0x03000000 zephyr.uImage;
+ * bootm") while its linked address is 0x9000_0000_0300_0000. Zephyr programs
+ * DMW0/DMW1 and enables PG in reset.S (CONFIG_LOONGARCH_BOOT_DMW_MODE), which
+ * is what keeps 0x8000_0000_xxxx_xxxx uncached for MMIO and makes the 0x9
+ * window cached RAM. The 96 MB window ends at 0x0900_0000, i.e. below the SPL
+ * (physical 0x0900_0000).
+ */
+
+/dts-v1/;
+
+#include <loongson/ls2k0300.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "loongson,ls2k300-pai";
+	compatible = "loongson,ls2k300-pai";
+
+	aliases {
+		led0 = &led0;
+	};
+
+	/*
+	 * Board LED, from the vendor kernel's device tree for this board. The
+	 * board is the Loongson 2K0300 "先锋派" (Vanguard PI), described in
+	 * arch/loongarch/boot/dts/ls2k300_vanguard_pi_common.dtsi:
+	 *
+	 *   leds {
+	 *           led1 {
+	 *                   label = "led1";
+	 *                   gpios = <&gpio 54 GPIO_ACTIVE_LOW>;
+	 *                   linux,default-trigger = "heartbeat";
+	 *                   default-state = "on";
+	 *           };
+	 *   };
+	 *
+	 *   lcd_backlight: backlight {
+	 *           gpios = <&gpio 43 GPIO_ACTIVE_HIGH>;   / * panel, not an LED * /
+	 *   };
+	 *
+	 * Absolute GPIO54 is bank 1 pin 22 in this port, which splits the IP
+	 * into banks of at most 32 pins. The vendor LED node carries no
+	 * pinctrl-0, so the reset value of the mux block (function 0 = GPIO) is
+	 * what the LED needs and no pinctrl state is required here either.
+	 *
+	 * This matches the board's u-boot device tree (u-boot/.../ls2k300_pai.dts),
+	 * which also uses GPIO43 as the backlight.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led0: led_0 {
+			gpios = <&gpio1 22 GPIO_ACTIVE_LOW>;	/* absolute GPIO54 */
+			label = "led1";
+		};
+	};
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,sram = &ram0;
+	};
+
+	ram0: memory@9000000003000000 {
+		device_type = "memory";
+		compatible = "mmio-sram";
+		reg = <0x90000000 0x03000000 0x0 0x06000000>;
+	};
+};
+
+/* Console: UART0 @ 115200n8 */
+&uart0 {
+	status = "okay";
+};
+
+/* Blinkable led0 needs the GPIO controller */
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* GPIO64..95: enabled so the shell can drive any LED candidate in this bank */
+&gpio2 {
+	status = "okay";
+};
+
+/* GPIO96..105 */
+&gpio3 {
+	status = "okay";
+};

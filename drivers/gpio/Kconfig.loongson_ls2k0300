@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config GPIO_LOONGSON_LS2K0300
+	bool "Loongson LS2K0300 GPIO driver"
+	default y
+	depends on DT_HAS_LOONGSON_LS2K0300_GPIO_ENABLED
+	help
+	  Driver for the "byte controlled" GPIO block of the Loongson 2K0300
+	  (and compatible 2K series SoCs), register layout as in the mainline
+	  Linux driver drivers/gpio/gpio-loongson-64bit.c. Interrupt support
+	  is not implemented yet.

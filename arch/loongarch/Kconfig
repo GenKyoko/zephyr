@@ -35,30 +35,425 @@ config IDLE_STACK_SIZE
 config ISR_STACK_SIZE
 	default 2048
 
-config LOONGARCH_LSX
-	bool "Use LoongArch SIMD eXtension"
-	default n
-	depends on FPU
+# Interrupts are not stacked on a separate stack: struct arch_esf (320 bytes)
+# plus the ISR call chain is built on the stack of the interrupted thread,
+# so tests that create threads with deliberately small stacks need extra
+# room. Same constraint as the MIPS port, which raises this as well.
+config TEST_EXTRA_STACK_SIZE
+	default 1024
+
+config LOONGARCH_BOOT_DMW_MODE
+	bool "Program the direct map windows and enable paging at boot"
 	help
-	  This option enables the 128bit SIMD Support for LoongArch.
+	  Program DMW0 for the 0x8000_0000_0000_0000 uncached MMIO window and
+	  DMW1 for the 0x9000_0000_0000_0000 cached RAM window, then switch
+	  CRMD to PG=1 with coherent cached DATF/DATM, exactly like the Linux
+	  kernel does on LoongArch.
+
+	  Needed on SoCs whose boot loader hands over with paging disabled
+	  (CRMD=0, PG=0): without the windows every access, instruction fetch
+	  included, is resolved through the TLB, so the kernel runs on the
+	  boot loader's page tables and faults as soon as it touches a page
+	  the loader never mapped. The windows are also what keeps MMIO
+	  uncached, because DATF/DATM alone applies to the 0x8000 window too.
+
+config LOONGARCH_HAS_LSX
+	bool
+	default y
+	help
+	  Hidden option telling whether the selected core implements the
+	  128-bit LoongArch SIMD eXtension (LSX). SoCs whose core has no SIMD
+	  unit (such as the LA264 of the Loongson 2K0300) set this to n, which
+	  removes the LOONGARCH_LSX and LOONGARCH_LASX options entirely.
+
+config LOONGARCH_HAS_LASX
+	bool
+	default y
+	help
+	  Hidden option telling whether the selected core implements the
+	  256-bit LoongArch Advanced SIMD eXtension (LASX). Cores without a
+	  SIMD unit (LA264) set this to n as well.
+
+config LOONGARCH_LSX
+	bool "Use LoongArch SIMD eXtension (LSX)"
+	depends on FPU
+	depends on LOONGARCH_HAS_LSX
+	help
+	  Enable the 128-bit LoongArch SIMD eXtension (-msimd=lsx).
+
+	  LSX uses the 128-bit vector registers vr0-vr31, which are not saved
+	  across context switches yet. Enable this only when a single thread
+	  performs vector operations.
 
 config LOONGARCH_LASX
-	bool "Use LoongArch Advanced SIMD eXtension"
-	default n
+	bool "Use LoongArch Advanced SIMD eXtension (LASX)"
+	depends on LOONGARCH_LSX
+	depends on LOONGARCH_HAS_LASX
+	help
+	  Enable the 256-bit LoongArch Advanced SIMD eXtension (-msimd=lasx).
+	  LASX implies LSX, and the same caveat about vector register context
+	  applies.
+
+menu "Processor and instruction set options"
+
+choice LOONGARCH_MARCH
+	prompt "Processor or instruction set level (-march)"
+	default LOONGARCH_MARCH_LA64V1_0
+	help
+	  Generate code for the selected instruction set level or processor,
+	  passed to the compiler as -march=.
+
+	  The values accepted by loongarch64-*-gcc are la64v1.0, la64v1.1,
+	  loongarch64, la464 and la664 ('native' and 'abi-default' cannot be
+	  used for cross compilation and are not offered here).
+
+	  Note that selecting a specific core (la464, la664) also allows the
+	  compiler to emit that core's optional instructions, including LSX,
+	  without CONFIG_LOONGARCH_LSX being set: use it only if the
+	  application does not rely on vector registers being preserved
+	  across context switches.
+
+config LOONGARCH_MARCH_LA64V1_0
+	bool "la64v1.0 - baseline LA64 ISA, runs on every LA64 core"
+
+config LOONGARCH_MARCH_LA64V1_1
+	bool "la64v1.1 - LA64 ISA level 1.1"
+
+config LOONGARCH_MARCH_LOONGARCH64
+	bool "loongarch64 - generic LA64 core"
+
+config LOONGARCH_MARCH_LA464
+	bool "la464 - Loongson 3A5000/3C5000 series"
+
+config LOONGARCH_MARCH_LA664
+	bool "la664 - Loongson 3A6000/3C6000 series"
+
+endchoice
+
+choice LOONGARCH_MTUNE
+	prompt "Tune for processor (-mtune)"
+	default LOONGARCH_MTUNE_LOONGARCH64
+	help
+	  Tune the instruction selection and scheduling for the selected
+	  processor, passed to the compiler as -mtune=. Unlike -march, this
+	  does not allow the compiler to use additional instructions.
+
+	  The values accepted by loongarch64-*-gcc are generic, loongarch64,
+	  la464 and la664.
+
+config LOONGARCH_MTUNE_GENERIC
+	bool "generic"
+
+config LOONGARCH_MTUNE_LOONGARCH64
+	bool "loongarch64 - generic LA64 tuning"
+
+config LOONGARCH_MTUNE_LA464
+	bool "la464 - Loongson 3A5000/3C5000 series"
+
+config LOONGARCH_MTUNE_LA664
+	bool "la664 - Loongson 3A6000/3C6000 series"
+
+endchoice
+
+choice LOONGARCH_CMODEL
+	prompt "Code model (-mcmodel)"
+	default LOONGARCH_CMODEL_NORMAL
+	help
+	  Select the code model, passed to the compiler as -mcmodel=.
+
+	  normal addresses the whole 64-bit address space and is what the
+	  default Zephyr linker setup assumes. The other models change how
+	  symbols are addressed (medium/large use la.abs or a GOT for symbols
+	  outside the low 4 GiB, tiny/tiny-static assume a fixed low address
+	  window) and therefore constrain where the image may be placed; they
+	  are only useful for specific memory layouts and are not exercised
+	  by the default QEMU setup.
+
+config LOONGARCH_CMODEL_NORMAL
+	bool "normal - direct addressing of the whole address space"
+
+config LOONGARCH_CMODEL_MEDIUM
+	bool "medium - use la.abs for symbols in the higher half"
+
+config LOONGARCH_CMODEL_LARGE
+	bool "large - use -fplt and/or a GOT for external symbols"
+
+config LOONGARCH_CMODEL_EXTREME
+	bool "extreme - use la.abs for all symbols"
+
+config LOONGARCH_CMODEL_TINY
+	bool "tiny - kernels running in a fixed low address window"
+
+config LOONGARCH_CMODEL_TINY_STATIC
+	bool "tiny-static - tiny model without shared library support"
+
+endchoice
+
+endmenu # Processor and instruction set options
+
+menu "Floating point options"
+
+# LoongArch floating point support is optional and split over two options:
+#
+#   CONFIG_FPU          - the hardware floating point unit is enabled in
+#                         EUEN.FPE by the reset code. The floating point
+#                         registers are not preserved across context
+#                         switches, so only one thread may use them
+#                         (unshared FP registers mode).
+#
+#   CONFIG_FPU_SHARING  - additionally makes z_loongarch_switch() save and
+#                         restore f0-f31, fcsr0 and fcc0-fcc7 for every
+#                         thread, so multiple threads may use the FPU
+#                         concurrently. The transfer happens on every
+#                         switch; a lazy scheme driven by the FPD exception
+#                         could be added later to avoid that cost.
+#
+# Interrupt service routines must not use floating point in either mode, as
+# the exception entry does not save the floating point context.
+#
+# Disabling CONFIG_FPU selects the soft float ABI (lp64s), which needs a
+# toolchain with a matching libgcc: the loongarch64 toolchain of Zephyr SDK
+# 1.0.1 only ships an lp64d libgcc, so soft float images cannot be linked
+# with it.
+
+choice LOONGARCH_FLOAT_ABI
+	prompt "Base ABI and floating point unit (-mabi, -mfpu)"
+	default LOONGARCH_FLOAT_ABI_LP64D if FPU
+	default LOONGARCH_FLOAT_ABI_LP64S
+	help
+	  LoongArch defines three base ABIs, which also determine how
+	  floating point values are passed between functions and which -mfpu=
+	  value is used:
+
+	  - lp64d: 64-bit integer registers plus double precision floating
+	    point registers (-mabi=lp64d -mfpu=64),
+	  - lp64f: 64-bit integer registers plus single precision floating
+	    point registers (-mabi=lp64f -mfpu=32),
+	  - lp64s: 64-bit integer registers only, no floating point registers
+	    (-mabi=lp64s -mfpu=none, soft float).
+
+	  All translation units, including the C library, must use the same
+	  ABI. lp64d and lp64f additionally require CONFIG_FPU.
+
+config LOONGARCH_FLOAT_ABI_LP64D
+	bool "lp64d - double precision FPU ABI"
 	depends on FPU
 	help
-	  This option enables the 256bit SIMD Support for LoongArch.
+	  Requires a double precision floating point unit, which is the usual
+	  case for 64-bit LoongArch cores (CPU_HAS_FPU_DOUBLE_PRECISION).
 
-# IRQ offload is delivered through a software interrupt. ESTAT.IS[1:0] are
-# writable by software (in addition to being readable), so either of them can
-# be used to raise an interrupt on demand.
-config LOONGARCH_IRQ_OFFLOAD_IRQ
-	int "Interrupt line used for IRQ offload"
-	default 0
-	range 0 1
-	depends on IRQ_OFFLOAD
+config LOONGARCH_FLOAT_ABI_LP64F
+	bool "lp64f - single precision FPU ABI"
+	depends on FPU
 	help
-	  Software interrupt line (0 or 1) that is raised by arch_irq_offload()
-	  to run a routine in interrupt context.
+	  Note: with the GCC 14.3 toolchain shipped in Zephyr SDK 1.0.1, the
+	  combination of this ABI with -mfpu=32 makes the assembler reject
+	  some files at -Os ("register save offset not a multiple of 8").
+	  The ABI itself is accepted and builds at -O0, or with -mfpu=64, so
+	  treat this as a toolchain defect and prefer lp64d until a fixed
+	  toolchain is available.
+
+	  Like lp64s, this ABI also needs a toolchain that provides a libgcc
+	  built for it; the loongarch64 toolchain of Zephyr SDK 1.0.1 is a
+	  single configuration (lp64d) build without multilib, so images using
+	  this ABI cannot be linked with it.
+
+config LOONGARCH_FLOAT_ABI_LP64S
+	bool "lp64s - soft float ABI"
+	help
+	  Needs a toolchain that provides a libgcc built for the soft float
+	  ABI. The loongarch64 toolchain of Zephyr SDK 1.0.1 is a single
+	  configuration (lp64d) build without multilib, so linking a soft
+	  float image with it fails with "can't link different ABI object".
+	  Disabling CONFIG_FPU selects this ABI.
+
+endchoice
+
+choice LOONGARCH_FP_CONTRACT
+	prompt "Floating point contraction (-ffp-contract, -mfused-madd)"
+	default LOONGARCH_FP_CONTRACT_FAST
+	help
+	  Control whether the compiler may fuse floating point multiply and
+	  add into a single instruction. This is the LoongArch -mfused-madd
+	  option, which GCC defines as an alias for -ffp-contract=.
+
+	  fast (the compiler default) also fuses across statements, which may
+	  produce results that differ from a strict IEEE evaluation of the
+	  source code.
+
+config LOONGARCH_FP_CONTRACT_FAST
+	bool "fast - allow fusing operations from different statements"
+
+config LOONGARCH_FP_CONTRACT_ON
+	bool "on - only fuse operations within the same statement"
+
+config LOONGARCH_FP_CONTRACT_OFF
+	bool "off - never fuse multiply and add"
+
+endchoice
+
+endmenu # Floating point options
+
+menu "Code generation options"
+
+config LOONGARCH_RELAX
+	bool "Enable linker relaxations (-mrelax)"
+	default y
+	help
+	  Allow the compiler to emit relaxation hints and the linker to
+	  shorten sequences into more efficient instructions (-mrelax, which
+	  passes --relax to the linker). Disable it, for example, when the
+	  image is post-processed by a tool that cannot handle relaxations.
+
+choice LOONGARCH_EXPLICIT_RELOCS
+	prompt "Explicit relocations (-mexplicit-relocs)"
+	default LOONGARCH_EXPLICIT_RELOCS_AUTO
+	help
+	  Control when %reloc() assembly operators are emitted for symbol
+	  accesses (-mexplicit-relocs=).
+
+	  auto (the compiler default) lets the compiler decide, always emits
+	  them unconditionally, and none disables them (required by very old
+	  assemblers).
+
+config LOONGARCH_EXPLICIT_RELOCS_AUTO
+	bool "auto - let the compiler decide"
+
+config LOONGARCH_EXPLICIT_RELOCS_ALWAYS
+	bool "always - always use %reloc() operators"
+
+config LOONGARCH_EXPLICIT_RELOCS_NONE
+	bool "none - do not use %reloc() operators"
+
+endchoice
+
+config LOONGARCH_DIRECT_EXTERN_ACCESS
+	bool "Avoid the GOT for external symbols (-mdirect-extern-access)"
+	help
+	  Access external symbols directly instead of through the global
+	  offset table, which saves a load per reference. This requires a
+	  non-PIC/-fno-pie build (the Zephyr default) and is incompatible
+	  with building the image as a shared object.
+
+config LOONGARCH_STRICT_ALIGN
+	bool "Do not generate unaligned memory accesses (-mstrict-align)"
+	help
+	  Never generate loads and stores that are not naturally aligned.
+	  The LoongArch architecture allows unaligned accesses (see the
+	  reference manual section on memory accesses), so this is disabled
+	  by default; enable it for implementations or devices that trap on
+	  unaligned accesses.
+
+config LOONGARCH_CHECK_ZERO_DIVISION
+	bool "Trap on integer division by zero (-mcheck-zero-division)"
+	help
+	  Emit an explicit check for a zero divisor and break (BRK) instead
+	  of relying on the division instruction's result. Disabled by
+	  default, matching the compiler default.
+
+config LOONGARCH_LD_SEQ_SA
+	bool "Do not need load-load barriers (-mld-seq-sa)"
+	help
+	  Tell the compiler that the hardware does not require the
+	  load-load ordering barrier, allowing it to drop the extra dbar
+	  instruction from the memory barriers. Only enable it for cores
+	  where this is architecturally guaranteed.
+
+config LOONGARCH_LAM_BH
+	bool "Use am{swap,add}[_db].{b,h} instructions (-mlam-bh)"
+	help
+	  Allow the compiler to use byte and halfword atomic memory
+	  operations (LAM_BH). Disabled by default, matching the compiler
+	  default; the CPUCFG LAM_BH bit reports whether the core implements
+	  them.
+
+config LOONGARCH_LAMCAS
+	bool "Use amcas[_db].{b,h,w,d} instructions (-mlamcas)"
+	help
+	  Allow the compiler to use byte and halfword compare-and-swap
+	  (LAMCAS) atomic memory operations. Disabled by default, matching
+	  the compiler default; the CPUCFG LAMCAS bit reports whether the
+	  core implements them.
+
+config LOONGARCH_RECIP
+	bool "Use reciprocal and reciprocal square root instructions (-mrecip)"
+	help
+	  Generate approximate reciprocal and reciprocal square root
+	  instructions followed by a Newton-Raphson step for floating point
+	  division and square root. This trades precision for speed.
+
+config LOONGARCH_RECIP_OPTIONS
+	string "Reciprocal instruction selection (-mrecip=)"
+	depends on LOONGARCH_RECIP
+	help
+	  Optional argument for -mrecip=, for example 'all' or 'divdf3'
+	  (see the GCC manual for the accepted operation names and the
+	  leading '!' negation). Leave empty to pass plain -mrecip, which
+	  enables all of them.
+
+	  It is a string option, so it has to be quoted in a configuration
+	  file (CONFIG_LOONGARCH_RECIP_OPTIONS="all").
+
+config LOONGARCH_FRECIPE
+	bool "Support frecipe.{s,d} and frsqrte.{s,d} (-mfrecipe)"
+	help
+	  Allow the compiler to use the frecipe and frsqrte instructions,
+	  which provide an initial estimate for reciprocal and reciprocal
+	  square root. Disabled by default, matching the compiler default.
+
+config LOONGARCH_COND_MOVE_FLOAT
+	bool "Conditional moves for floating point (-mcond-move-float)"
+	default y
+	help
+	  Allow the compiler to use the floating point conditional move
+	  instructions. Enabled by default, matching the compiler default.
+
+config LOONGARCH_COND_MOVE_INT
+	bool "Conditional moves for integers (-mcond-move-int)"
+	default y
+	help
+	  Allow the compiler to use the integer conditional move
+	  instructions. Enabled by default, matching the compiler default.
+
+config LOONGARCH_BRANCH_COST
+	int "Cost model for branches (-mbranch-cost)"
+	default 0
+	help
+	  Set the cost of branches to roughly this value, which influences
+	  how aggressively branches are used. Leave at 0 to keep the value
+	  chosen by the compiler for the selected -mtune processor.
+
+config LOONGARCH_MAX_INLINE_MEMCPY_SIZE
+	int "Maximum size of memcpy to inline (-mmax-inline-memcpy-size)"
+	default 0
+	help
+	  Inline memcpy calls of up to this size (the compiler default is
+	  1024 bytes). Leave at 0 to keep the compiler default.
+
+config LOONGARCH_MEMCPY
+	bool "Prevent optimizing block moves (-mmemcpy)"
+	help
+	  Prevent the compiler from optimizing block moves, forcing calls to
+	  memcpy/memmove instead. Disabled by default, matching the compiler
+	  default.
+
+choice LOONGARCH_TLS_DIALECT
+	prompt "TLS access model (-mtls-dialect)"
+	default LOONGARCH_TLS_DIALECT_TRAD
+	help
+	  Select the instruction sequences used to access thread local
+	  storage: 'trad' uses the general dynamic/local dynamic models,
+	  'desc' uses the descriptor based access model. This only affects
+	  code generated for CONFIG_THREAD_LOCAL_STORAGE builds.
+
+config LOONGARCH_TLS_DIALECT_TRAD
+	bool "trad - traditional TLS access"
+
+config LOONGARCH_TLS_DIALECT_DESC
+	bool "desc - descriptor based TLS access"
+
+endchoice
+
+endmenu # Code generation options
 
 endmenu

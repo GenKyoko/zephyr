@@ -1,0 +1,6 @@
+board:
+  name: ls2k300_pai
+  full_name: Loongson 2K0300 PAI (LS2K300-PAI)
+  vendor: loongson
+  socs:
+    - name: ls2k0300

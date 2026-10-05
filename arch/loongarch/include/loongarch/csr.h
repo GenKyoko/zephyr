@@ -69,6 +69,27 @@
 #define LOONGARCH_CRMD_DATM_MASK	0x180
 #define LOONGARCH_CRMD_DATM_CC		0x80	/* 0b01: coherent cached */
 
+/*
+ * Direct mapping windows. A window maps a whole 16 EiB "VSEG" prefix to
+ * physical memory without a TLB lookup, which is what makes the LoongArch
+ * 0x8000_0000_xxxx_xxxx (uncached MMIO) and 0x9000_0000_xxxx_xxxx (cached RAM)
+ * addresses work when paging is enabled.
+ */
+#define LOONGARCH_CSR_DMW0		0x180	/* 64 bit direct map window 0 */
+#define LOONGARCH_CSR_DMW1		0x181	/* 64 bit direct map window 1 */
+
+#define LOONGARCH_DMW_PLV0		0x1	/* PLV0 accesses allowed */
+#define LOONGARCH_DMW_MAT_SHIFT		4
+#define LOONGARCH_DMW_MAT_SUC		(0x0 << LOONGARCH_DMW_MAT_SHIFT)
+#define LOONGARCH_DMW_MAT_CC		(0x1 << LOONGARCH_DMW_MAT_SHIFT)
+#define LOONGARCH_DMW_MAT_WUC		(0x2 << LOONGARCH_DMW_MAT_SHIFT)
+#define LOONGARCH_DMW_VSEG_SHIFT	48
+
+/* VSEG 0x8000, strongly ordered uncached, PLV0: the MMIO window */
+#define LOONGARCH_DMW0_INIT		0x8000000000000001
+/* VSEG 0x9000, coherent cached, PLV0: the kernel RAM window */
+#define LOONGARCH_DMW1_INIT		0x9000000000000011
+
 /* PRMD: previous PLV/IE, restored into CRMD by ertn */
 #define LOONGARCH_PRMD_PPLV_MASK	0x3
 #define LOONGARCH_PRMD_PIE		0x4

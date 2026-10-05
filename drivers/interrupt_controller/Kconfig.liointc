@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config INTC_LIOINTC
+	bool "Loongson LIOINTC interrupt controller"
+	default y
+	depends on DT_HAS_LOONGSON_LIOINTC_2_0_ENABLED
+	select LOONGARCH
+	help
+	  Enable the driver for the Loongson LIOINTC (Local I/O interrupt
+	  controller), version 2.0, used on the 2K0300 and other Loongson
+	  SoCs. The controller aggregates 32 peripheral interrupt lines onto
+	  a single LoongArch CPU interrupt line.

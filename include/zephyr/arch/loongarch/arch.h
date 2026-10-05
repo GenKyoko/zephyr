@@ -33,6 +33,43 @@ void arch_irq_enable(unsigned int irq);
 void arch_irq_disable(unsigned int irq);
 int arch_irq_is_enabled(unsigned int irq);
 
+/* Number of CPU interrupt lines delivered through ESTAT.IS / ECFG.LIE */
+#define LOONGARCH_CPU_IRQ_NUM 16
+
+/*
+ * Secondary (aggregated) interrupt controllers.
+ *
+ * SoCs such as the Loongson 2K0300 route most peripheral interrupts through a
+ * secondary controller (LIOINTC) that is itself wired to a single CPU line.
+ * The children of such a controller occupy the flat IRQ space above the CPU
+ * lines and register themselves here so that irq_enable()/irq_disable() reach
+ * the secondary controller instead of ECFG.LIE.
+ */
+struct z_loongarch_sub_intc_ops {
+	void (*enable)(const void *ctx, unsigned int bit);
+	void (*disable)(const void *ctx, unsigned int bit);
+	int (*is_enabled)(const void *ctx, unsigned int bit);
+};
+
+struct z_loongarch_sub_intc {
+	/** First flat IRQ number handled by this controller */
+	unsigned int base;
+	/** Number of IRQ lines of this controller */
+	unsigned int count;
+	const struct z_loongarch_sub_intc_ops *ops;
+	/** Opaque pointer passed back to the ops */
+	const void *ctx;
+};
+
+/**
+ * @brief Register a secondary interrupt controller
+ *
+ * @param intc Controller description, must have static storage duration
+ *
+ * @return 0 on success, negative errno otherwise
+ */
+int z_loongarch_sub_intc_register(const struct z_loongarch_sub_intc *intc);
+
 /**
  * Configure a static interrupt.
  *

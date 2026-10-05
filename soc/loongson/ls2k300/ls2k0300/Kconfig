@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-config SOC_QEMU_VIRT_LOONGARCH64
+config SOC_LS2K0300
 	bool
-	# The la464 core of the QEMU virt machine has a double precision FPU
+	# The LA264 core of the 2K0300 has a double precision FPU
 	select CPU_HAS_FPU_DOUBLE_PRECISION

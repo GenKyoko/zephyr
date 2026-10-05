@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+CONFIG_CONSOLE=y
+CONFIG_SERIAL=y
+CONFIG_UART_CONSOLE=y
+CONFIG_STACK_SENTINEL=y
+
+# The image is loaded into DDR (no execute in place)
+CONFIG_XIP=n
+
+# The LoongArch toolchain ships newlib instead of picolibc
+CONFIG_MINIMAL_LIBC=y
+
+# The LA264 core integrates an FPU
+CONFIG_FPU=y
+
+# LIOINTC forwards the peripheral interrupts of the SoC
+CONFIG_INTC_LIOINTC=y
+
+# GPIO + gpio-leds (LED0 on GPIO43 = gpio1 pin 11)
+CONFIG_GPIO=y
+CONFIG_LED=y

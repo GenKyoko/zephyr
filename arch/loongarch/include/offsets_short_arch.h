@@ -37,6 +37,16 @@
 #define _thread_offset_to_switch_handle \
 	(___thread_t_switch_handle_OFFSET)
 
+#if defined(CONFIG_FPU_SHARING)
+/* Floating point context of a thread, and offsets relative to its start */
+#define _thread_offset_to_fp_ctx \
+	(___thread_t_arch_OFFSET + __struct__thread_arch_fp_ctx_OFFSET)
+#define _fp_ctx_offset_to_fcc \
+	(__struct_z_loongarch_fp_context_fcc_OFFSET)
+#define _fp_ctx_offset_to_fcsr \
+	(__struct_z_loongarch_fp_context_fcsr_OFFSET)
+#endif /* CONFIG_FPU_SHARING */
+
 /* Offset of the general purpose register $rN inside struct arch_esf */
 #define _esf_reg_offset(n) \
 	(__struct_arch_esf_regs_OFFSET + (n) * 8)

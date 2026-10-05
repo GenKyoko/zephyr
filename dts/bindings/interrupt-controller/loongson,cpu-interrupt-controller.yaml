@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  LoongArch CPU interrupt controller. The controller is part of the core and
+  exposes up to 16 interrupt lines through ESTAT.IS / ECFG.LIE; it has no
+  register block of its own.
+
+compatible: "loongson,cpu-interrupt-controller"
+
+include: [interrupt-controller.yaml, base.yaml]
+
+interrupt-cells:
+  - irq
+  - priority

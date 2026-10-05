@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: Loongson LA264 (LoongArch 64-bit) CPU
+
+compatible: "loongson,la264"
+
+include: cpu.yaml

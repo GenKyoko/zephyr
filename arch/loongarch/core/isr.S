@@ -19,6 +19,9 @@
 GTEXT(z_loongarch_exception_entry)
 GTEXT(z_loongarch_thread_start)
 GTEXT(z_loongarch_enter_irq)
+#if defined(CONFIG_IRQ_OFFLOAD)
+GTEXT(z_loongarch_enter_offload)
+#endif
 GTEXT(z_loongarch_fault)
 GTEXT(z_get_next_switch_handle)
 GTEXT(z_loongarch_switch)
@@ -90,8 +93,49 @@ z_loongarch_exception_entry:
 
 	/* Ecode == 0 means interrupt (ECFG.VS == 0) */
 	bstrpick.d	$r13, $r12, 21, 16
-	bnez		$r13, .Lexception
+	beqz		$r13, .Linterrupt
 
+#if defined(CONFIG_IRQ_OFFLOAD)
+	/* irq_offload() traps through BREAK to run in exception context */
+	li.w		$r14, LOONGARCH_ECODE_BRK
+	beq		$r13, $r14, .Loffload
+#endif
+
+	/*
+	 * Line interrupts can also be delivered as direct (vector) interrupts,
+	 * where the exception code is 0x40 + line number instead of 0 (INT0 ..
+	 * INT12, Ecode 0x40..0x4C, see the exception code table). Those are
+	 * ordinary line interrupts and must be dispatched by line, not sent to
+	 * the fault handler. ESTAT.IS is not necessarily set in that case, so
+	 * build the bit mask from the exception code.
+	 */
+	li.w		$r14, 0x40
+	bltu		$r13, $r14, .Lexception
+	li.w		$r14, 0x4c
+	bltu		$r14, $r13, .Lexception
+
+	addi.d		$a0, $r13, -0x40
+	li.w		$r12, 1
+	sll.d		$a0, $r12, $a0
+	bl		z_loongarch_enter_irq
+	bnez		$a0, .Lcheck_reschedule
+	b		.Lno_reschedule
+
+.Lexception:
+	move		$a0, $sp
+	bl		z_loongarch_fault
+	/* z_loongarch_fault() does not return */
+	b		.Lno_reschedule
+
+#if defined(CONFIG_IRQ_OFFLOAD)
+.Loffload:
+	move		$a0, $sp
+	bl		z_loongarch_enter_offload
+	bnez		$a0, .Lcheck_reschedule
+	b		.Lno_reschedule
+#endif
+
+.Linterrupt:
 	/* int_vec = ESTAT.IS & ECFG.LIE */
 	csrrd		$r12, LOONGARCH_CSR_ESTAT
 	csrrd		$r13, LOONGARCH_CSR_ECFG
@@ -103,12 +147,6 @@ z_loongarch_exception_entry:
 	 * rescheduling decision has to be taken.
 	 */
 	bnez		$a0, .Lcheck_reschedule
-	b		.Lno_reschedule
-
-.Lexception:
-	move		$a0, $sp
-	bl		z_loongarch_fault
-	/* z_loongarch_fault() does not return */
 	b		.Lno_reschedule
 
 .Lcheck_reschedule:

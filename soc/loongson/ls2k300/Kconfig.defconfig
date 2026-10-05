@@ -1,0 +1,74 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_FAMILY_LS2K300
+
+# LA264 integrates the LoongArch constant timer (CPUCFG4/CPUCFG5), and on the
+# 2K0300 its rdtime/TCFG clock is the 120 MHz reference oscillator (osc_clk in
+# the SoC device tree), not the core clock and not the APB clock.
+#
+# Measured on the board against the console, which is the only external clock
+# available: 16 characters at 115200 baud, i.e. 1389 us on the wire, take about
+# 167300 rdtime cycles, which is 120.4 MHz. The driver calibration in
+# drivers/timer/loongarch_constant_timer.c then confirms that one TCFG InitVal
+# unit is one of those cycles. With the previous 100000000 the tick never
+# matched the hardware and every delay in the system came out 20% short.
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 120000000
+
+config LOONGARCH_CONSTANT_TIMER
+	default y
+
+# The clock controller driver (drivers/clock_control/clock_control_loongson_
+# ls2k0300.c) reports the rates the PLLs are actually running at, which is what
+# the console NS16550 asks for its baud rate divisor. Its consumers, among them
+# the ns16550 driver, do not select the framework themselves.
+config CLOCK_CONTROL
+	default y
+
+# The controller takes the 120 MHz reference oscillator as its parent clock. It
+# is described as a fixed-clock in the SoC device tree.
+config CLOCK_CONTROL_FIXED_RATE_CLOCK
+	default y
+
+# The 2K0300 u-boot hands over with CRMD=0, i.e. PG=0 and no usable direct map
+# window: every access, the instruction fetch included, is then resolved through
+# the TLB, so the kernel quietly runs on u-boot's page tables and takes a TLB
+# refill exception the moment it touches a page u-boot never mapped. That is
+# exactly how the GPIO/LED initialisation used to kill the boot (the GPIO block
+# shares no page with the console UART), and the exception was caught by
+# u-boot's TLB refill handler, which is why it reported "TLB exception" instead
+# of a Zephyr fault.
+#
+# Program the windows and enable PG the way the Linux kernel does for this SoC:
+# 0x8000_0000_xxxx_xxxx stays uncached for MMIO, 0x9000_0000_xxxx_xxxx is
+# cached for RAM, and no TLB entry is needed at run time. Booting with cached
+# DATF/DATM and no window instead shadows every peripheral access behind the
+# D-cache - MMIO writes read back but never reach the device, status registers
+# freeze - which is what kept the console UART mute.
+config LOONGARCH_BOOT_DMW_MODE
+	default y
+
+# The LA264 core raises Ecode 9 (address alignment error) on unaligned loads
+# and stores instead of handling them in hardware, and Zephyr has no ALE
+# emulation in its exception path. The kernel structures contain packed
+# members, so the compiler must never emit an unaligned access: without this,
+# z_init_thread_base() traps on its st.h at offset 27 and the boot dies there.
+config LOONGARCH_STRICT_ALIGN
+	default y
+
+# The LA264 core of the 2K0300 has no SIMD unit: LSX and LASX must never be
+# enabled, and the baseline -march level (la64v1.0) keeps the compiler from
+# emitting vector instructions. See also soc/loongson/ls2k300/CMakeLists.txt.
+config LOONGARCH_HAS_LSX
+	default n
+
+config LOONGARCH_HAS_LASX
+	default n
+
+# IRQ space layout: CPU lines (ESTAT.IS[15:0]) 0..15, then the 32 children of
+# each of the two LIOINTC instances (LIOINTC0: 16..47, LIOINTC1: 48..79).
+config NUM_IRQS
+	default 80
+
+endif # SOC_FAMILY_LS2K300

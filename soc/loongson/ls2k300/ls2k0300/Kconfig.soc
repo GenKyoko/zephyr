@@ -1,0 +1,9 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_LS2K0300
+	bool
+	select SOC_FAMILY_LS2K300
+
+config SOC
+	default "ls2k0300" if SOC_LS2K0300

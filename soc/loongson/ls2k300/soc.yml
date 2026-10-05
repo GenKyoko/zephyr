@@ -1,0 +1,4 @@
+family:
+- name: ls2k300
+  socs:
+  - name: ls2k0300
