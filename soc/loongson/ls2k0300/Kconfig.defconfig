@@ -59,16 +59,21 @@ config LOONGARCH_STRICT_ALIGN
 
 # The LA264 core of the 2K0300 has no SIMD unit: LSX and LASX must never be
 # enabled, and the baseline -march level (la64v1.0) keeps the compiler from
-# emitting vector instructions. See also soc/loongson/ls2k300/CMakeLists.txt.
+# emitting vector instructions. See also soc/loongson/ls2k0300/CMakeLists.txt.
 config LOONGARCH_HAS_LSX
 	default n
 
 config LOONGARCH_HAS_LASX
 	default n
 
-# IRQ space layout: CPU lines (ESTAT.IS[15:0]) 0..15, then the 32 children of
-# each of the two LIOINTC instances (LIOINTC0: 16..47, LIOINTC1: 48..79).
+# IRQ space layout: CPU lines (ESTAT.IS[15:0]) 0..15, then the 128 vectors of
+# the EIOINTC (16..143).
+#
+# The EIOINTC is the only interrupt controller this port models, see
+# dts/loongarch/loongson/ls2k0300.dtsi. The SoC's legacy LIOINTC is not
+# modelled either, so its 64 lines do not occupy the space; a port that needs
+# it again would add 144..207 back and raise NUM_IRQS to 208.
 config NUM_IRQS
-	default 80
+	default 144
 
 endif # SOC_FAMILY_LS2K300

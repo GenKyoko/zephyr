@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 PWM front end of the ATIM/GTIM timer blocks.
+
+  This node is the child of a "loongson,loongson-timers" node and carries no
+  register block of its own: the parent owns "reg", the array writer, the
+  clocks and the interrupt, exactly as in the vendor Linux device tree, where
+  drivers/mfd/loongson-timers.c populates this node and
+  drivers/pwm/pwm-ls-timer.c drives it. The Zephyr driver
+  (drivers/pwm/pwm_loongson_ls_timer.c) reaches the registers through its parent
+  node.
+
+  Number of channels and the width of the auto reload register are probed at
+  run time (by writing the channel enable bits and the ARR and reading back what
+  sticks), so nothing about them has to be described here.
+
+  The channel pins are muxed by the board: the vendor device tree has
+  "atim3_pin_m0/m1" (GPIO30 / GPIO83), "gtim2_pin_m1" (GPIO88) and friends for
+  that.
+
+compatible: "loongson,ls2k-pwm-timer"
+
+include: [pwm-controller.yaml, base.yaml]
+
+properties:
+  loongson,complementary-only:
+    type: int
+    description: |
+      Bit mask of the PWM channels that drive their complementary output (CHxN)
+      instead of their main output (CHx): bit 0 is the first channel, i.e. chip
+      CH1, bit 2 is chip CH3. Channels that are not in the mask drive both of
+      their outputs where the block has them.
+
+      Only the ATIM has complementary outputs (CH1N..CH3N). Setting this on a
+      block without them - the GTIM - makes the device fail to initialize, which
+      is loud on purpose: the property would otherwise silently drive nothing.
+
+      The pins themselves stay board wiring: a channel is only seen on a pin if
+      the board muxes it (pinctrl-0 of the parent timer node). Note that the two
+      outputs of a channel are switched without dead time; BDTR.DTG stays at
+      zero.
+
+      "loongson,complementary-only = <0x4>;" makes channel 3 (chip CH3) drive
+      CH3N alone.
+    default: 0
+
+  "#pwm-cells":
+    const: 3
+
+pwm-cells:
+  - channel
+  # period in nanoseconds; the same two cells the vendor Linux node declares
+  - period
+  - flags

@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config INTC_EIOINTC
+	bool "Loongson EIOINTC (extended I/O interrupt controller)"
+	default y
+	depends on DT_HAS_LOONGSON_LS2K0300_EIOINTC_ENABLED
+	select LOONGARCH
+	help
+	  Enable the driver for the Loongson EIOINTC (extended I/O interrupt
+	  controller, "EXTIOI" on the 2K0300). The controller provides up to 128
+	  independent peripheral interrupt vectors and forwards them to a single
+	  LoongArch CPU interrupt line.
+
+	  It is the successor of the LIOINTC, which aggregates 32 peripheral
+	  lines onto one CPU line, several of which the SoC wires to a group of
+	  peripherals (uart2..uart5 share one line on the 2K0300). With the
+	  static ISR table of this port only one handler can serve such a line,
+	  so peripherals that need their own interrupt should use the EIOINTC.

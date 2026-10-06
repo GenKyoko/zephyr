@@ -12,12 +12,20 @@
  *
  * Interrupts are numbered in a flat, SoC wide space:
  *
- *   0..15   CPU interrupt lines (ESTAT.IS[15:0], enabled through ECFG.LIE)
- *   16..47  LIOINTC0 children 0..31
- *   48..79  LIOINTC1 children 0..31
+ *   0..15    CPU interrupt lines (ESTAT.IS[15:0], enabled through ECFG.LIE)
+ *   16..143  EIOINTC vectors 0..127
  *
  * Peripheral nodes therefore carry the *flat* number in their "interrupts"
- * entry (e.g. <16 1> is child 0 of LIOINTC0 with priority 1).
+ * entry (e.g. <16 1> is vector 0 of the EIOINTC with priority 1).
+ *
+ * The EIOINTC is the interrupt controller of this port: the SoC wires every
+ * peripheral interrupt to it, each source with a vector of its own. Its
+ * predecessor, the legacy LIOINTC, is not modelled - it aggregates several
+ * sources per line (uart2..uart5 share one, for example), which a static ISR
+ * table can only serve one of - and its driver, binding and nodes were removed
+ * once the EIOINTC took over. Its hardware facts are kept in the port notes
+ * (`.vscode/skills/ls2k0300-port/references/hardware-registers.md`) for a
+ * future 2K SoC that has no extended controller.
  */
 
 /dts-v1/;
@@ -109,40 +117,300 @@
 			uart0_tx_default: uart0_tx_default {
 				pinmux = <41 3>;
 			};
+
+			/*
+			 * I2C pins, all on their primary function, the same
+			 * setting the vendor device tree writes for GPIO48..55
+			 * in the pin mux word at offset 0xc (GPIO_CFG3):
+			 *
+			 *   i2c0_pins: pinctrl-single,bits = <0xc 0x0000000f 0x0000000f>;
+			 *   i2c1_pins: pinctrl-single,bits = <0xc 0x000000f0 0x000000f0>;
+			 *   i2c2_pins: pinctrl-single,bits = <0xc 0x00000f00 0x00000f00>;
+			 *   i2c3_pins: pinctrl-single,bits = <0xc 0x0000f000 0x0000f000>;
+			 */
+			i2c0_g48_default: i2c0_g48_default {
+				pinmux = <48 3>;
+			};
+
+			i2c0_g49_default: i2c0_g49_default {
+				pinmux = <49 3>;
+			};
+
+			i2c1_g50_default: i2c1_g50_default {
+				pinmux = <50 3>;
+			};
+
+			i2c1_g51_default: i2c1_g51_default {
+				pinmux = <51 3>;
+			};
+
+			i2c2_g52_default: i2c2_g52_default {
+				pinmux = <52 3>;
+			};
+
+			i2c2_g53_default: i2c2_g53_default {
+				pinmux = <53 3>;
+			};
+
+			i2c3_g54_default: i2c3_g54_default {
+				pinmux = <54 3>;
+			};
+
+			i2c3_g55_default: i2c3_g55_default {
+				pinmux = <55 3>;
+			};
+
+			/*
+			 * Mainline also defines an alternative pad group for i2c2
+			 * and i2c3, on function 2 instead of 3:
+			 *
+			 *   i2c2_G82_G83_pins: pinctrl-single,bits = <0x14 0x000000a0 0x000000f0>;
+			 *   i2c3_G84_G85_pins: pinctrl-single,bits = <0x14 0x00000a00 0x00000f00>;
+			 *
+			 * i.e. both fields 0b10 in the pin mux word at offset 0x14
+			 * (GPIO80..95). A board picks one group per bus by
+			 * referencing its two states in the controller's pinctrl-0;
+			 * the controllers above default to the G52..G55 group.
+			 */
+			i2c2_g82_default: i2c2_g82_default {
+				pinmux = <82 2>;
+			};
+
+			i2c2_g83_default: i2c2_g83_default {
+				pinmux = <83 2>;
+			};
+
+			i2c3_g84_default: i2c3_g84_default {
+				pinmux = <84 2>;
+			};
+
+			i2c3_g85_default: i2c3_g85_default {
+				pinmux = <85 2>;
+			};
+
+			/*
+			 * ATIM/GTIM channel pins, taken from the vendor device
+			 * tree's pin mux table (each entry's
+			 * "pinctrl-single,bits" decoded to the port's
+			 * (pin, function) form). Channel 3 is the one Linux muxes
+			 * for the LCD backlight on the 99pi board:
+			 *
+			 *   ATIM1 G28 f2 / G81 f3    ATIM1N G31 f2 / G84 f3
+			 *   ATIM2 G29 f2 / G82 f3    ATIM2N G32 f2 / G85 f3
+			 *   ATIM3 G30 f2 / G83 f3    ATIM3N G33 f2 / G86 f3
+			 *   ATIM4 G76 f1 / G101 f1
+			 *   GTIM1 G34 f2 / G87 f3    GTIM2 G35 f2 / G88 f3
+			 *   GTIM3 G36 f2 / G89 f3    GTIM4 G77 f1 / G102 f1
+			 *
+			 * A board picks one pin per channel. Note that G82..G85
+			 * also carry the alternative i2c2/i2c3 groups above, so a
+			 * board that uses those buses must take its PWM channels
+			 * elsewhere (G30 for channel 3, G28/G29 for 1/2, ...).
+			 */
+			atim3_g30_default: atim3_g30_default {
+				pinmux = <30 2>;
+			};
+
+			atim3_g83_default: atim3_g83_default {
+				pinmux = <83 3>;
+			};
+
+			/*
+			 * The complementary outputs exist on the ATIM only
+			 * (ATIM1N..ATIM3N, i.e. CH1N..CH3N); the driver enables
+			 * them together with their channel, so referencing one of
+			 * these states in the block's pinctrl-0 is all it takes
+			 * to bring the pin out.
+			 */
+			atim3n_g33_default: atim3n_g33_default {
+				pinmux = <33 2>;
+			};
+
+			atim3n_g86_default: atim3n_g86_default {
+				pinmux = <86 3>;
+			};
+
+			/*
+			 * GTIM channel 2 (the "TIM2_CH2" of the vendor tables):
+			 * GPIO35 carries it on the m0 mux, GPIO88 on m1 - the pin
+			 * Linux switches for the 99pi's second PWM group. Add the
+			 * pins of the other channels from the table above the same
+			 * way (three lines per pin).
+			 */
+			gtim2_g35_default: gtim2_g35_default {
+				pinmux = <35 2>;
+			};
+
+			gtim2_g88_default: gtim2_g88_default {
+				pinmux = <88 3>;
+			};
+
+			/*
+			 * I2S pins, all on their I2S function. The mapping is the
+			 * one of the manual's pin table and of the vendor device
+			 * tree's "i2s_pins" group:
+			 *
+			 *   GPIO76 = i2s_mclk     GPIO79 = i2s_datai
+			 *   GPIO77 = i2s_bclk     GPIO80 = i2s_datao
+			 *   GPIO78 = i2s_lr
+			 *
+			 * GPIO76 also carries ATIM4 (function 1), GPIO77 GTIM4
+			 * (function 1), so a board picks one of the two functions
+			 * per pin by referencing the matching state.
+			 */
+			i2s_mclk_g76_default: i2s_mclk_g76_default {
+				pinmux = <76 3>;
+			};
+
+			i2s_bclk_g77_default: i2s_bclk_g77_default {
+				pinmux = <77 3>;
+			};
+
+			i2s_lr_g78_default: i2s_lr_g78_default {
+				pinmux = <78 3>;
+			};
+
+			i2s_di_g79_default: i2s_di_g79_default {
+				pinmux = <79 3>;
+			};
+
+			i2s_do_g80_default: i2s_do_g80_default {
+				pinmux = <80 3>;
+			};
 		};
 
 		/*
-		 * LIOINTC0: 32 peripheral lines aggregated onto CPU line 2
-		 * (IP2). Children are numbered 16..47.
+		 * EIOINTC ("EXTIOI"): 128 extended interrupt vectors, each one
+		 * separately maskable and routable, all of them cascaded onto CPU
+		 * line 3 (INT1 - the vendor device tree cascades it there as
+		 * well). The vector assignment is table 3-48 of the 2K0300 user
+		 * manual:
+		 *
+		 *   0..9     UART0..UART9       70, 71    SPI0, SPI1
+		 *   10..13   I2C0..I2C3         75, 76    GMAC0, GMAC1
+		 *   14, 15   SPI2, SPI3         78        THSENS
+		 *   16..23   CAN0..CAN3 core and buffer each
+		 *   25..27   ATIMER, GTIMER, BTIMER
+		 *   28..31   PWM0..PWM3
+		 *   45..52   APB-DMA0..APB-DMA7
+		 *   62..64   RTC-INT0..RTC-INT2
+		 *   79..105  GPIO0..GPIO105, four pins per vector
+		 *
+		 * "reg" is the SoC system register window: the controller's
+		 * register file sits at offset 0x1600 (enable), 0x1640
+		 * (polarity), 0x1700 (device status), 0x1800 (per core status and
+		 * clear) and 0x14c0 (vector routing), and the master enable is bit
+		 * 19 of the chip configuration register at offset 0x100.
 		 */
-		liointc0: interrupt-controller@8000000016001400 {
-			compatible = "loongson,liointc-2.0";
-			reg = <0x80000000 0x16001400 0x0 0x40>,
-			      <0x80000000 0x16001040 0x0 0x8>;
-			reg-names = "main", "isr0";
+		eiointc: interrupt-controller@8000000016000000 {
+			compatible = "loongson,ls2k0300-eiointc";
+			reg = <0x80000000 0x16000000 0x0 0x2000>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
 			interrupt-parent = <&cpuintc>;
-			interrupts = <2 0>;
-			loongson,parent-int-bitmap = <0xffffffff 0x0 0x0 0x0>;
+			interrupts = <3 0>;
 			zephyr,irq-base = <16>;
 		};
 
 		/*
-		 * LIOINTC1: 32 peripheral lines aggregated onto CPU line 4
-		 * (IP4). Children are numbered 48..79.
+		 * RTC: battery backed wall clock. The block's TOY counter counts
+		 * year/month/day/hour/minute/second (plus tenths) off the
+		 * 32.768 kHz crystal and is the time the driver reads and
+		 * writes; the register map is chapter 25 of the user manual.
+		 *
+		 * Its TOY match alarm does not work on this SoC (mainline Linux
+		 * carries the variant under LOONGSON_RTC_ALARM_WORKAROUND), so
+		 * the node carries no interrupt even though the interrupt tables
+		 * list RTC-INT0..2 / RTC-TICK / TOY-TICK.
+		 *
+		 * Always present and needing no pins, so it is enabled here
+		 * rather than per board.
 		 */
-		liointc1: interrupt-controller@8000000016001440 {
-			compatible = "loongson,liointc-2.0";
-			reg = <0x80000000 0x16001440 0x0 0x40>,
-			      <0x80000000 0x16001048 0x0 0x8>;
-			reg-names = "main", "isr0";
-			interrupt-controller;
-			#interrupt-cells = <2>;
-			interrupt-parent = <&cpuintc>;
-			interrupts = <4 0>;
-			loongson,parent-int-bitmap = <0x0 0x0 0xffffffff 0x0>;
-			zephyr,irq-base = <48>;
+		rtc0: rtc@8000000016128000 {
+			compatible = "loongson,ls2k0300-rtc";
+			reg = <0x80000000 0x16128000 0x0 0x100>;
+			status = "okay";
+		};
+
+		/*
+		 * I2S controller ("IIS", user manual chapter 11): one stereo
+		 * interface with an 8 byte FIFO per direction, an integer bit
+		 * clock divider and a fractional divider for the codec system
+		 * clock. Its interrupt is EIOINTC vector 24 (flat IRQ 40); the
+		 * driver polls the FIFOs - see the binding - so the node carries
+		 * no interrupt property.
+		 *
+		 * Kept disabled here: the five interface pins (GPIO76 MCLK,
+		 * GPIO77 BCLK, GPIO78 LR, GPIO79 data in, GPIO80 data out) are
+		 * board wiring, and so is the question whether anything drives
+		 * the codec system clock.
+		 */
+		/* The second label is what samples/drivers/i2s/echo looks for */
+		i2s0: i2s_rxtx: i2s@8000000016114000 {
+			compatible = "loongson,ls2k0300-i2s";
+			reg = <0x80000000 0x16114000 0x0 0x4000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&clk LS2K0300_CLK_I2S>;
+			status = "disabled";
+		};
+
+		/*
+		 * SoC timer blocks, ported from the vendor Linux device tree
+		 * (arch/loongarch/boot/dts/loongson-2k0300.dtsi, "timers1" and
+		 * "timers2"): STM32 style general purpose timers on the APB bus
+		 * (user manual chapters 18/19), four channels each, input capture
+		 * and output compare/PWM. Interrupt mapping and the (unused)
+		 * BTIM block are described in the binding.
+		 *
+		 * Both blocks stay disabled like in Linux - the channel pins are
+		 * board wiring - and each one carries the PWM child that Linux
+		 * hangs off it, which is what the PWM driver binds to
+		 * (drivers/pwm/pwm_loongson_ls_timer.c). The two blocks are
+		 * independent, so a board that enables both gets two PWM
+		 * frequencies at the same time.
+		 *
+		 * Linux names both children "pwm"; here they are called
+		 * "atim-pwm" and "gtim-pwm" instead, because a Zephyr device is
+		 * addressed by its node name and two devices with the same name
+		 * would be indistinguishable (the node labels atim_pwm/gtim_pwm
+		 * work as well).
+		 *
+		 * Left out of the Linux node: "dmas"/"dma-names", which this port
+		 * has no DMA controller node for - only the capture path needs
+		 * them, and capture is not implemented.
+		 */
+		timers1: timer@8000000016118000 {
+			compatible = "loongson,loongson-timers";
+			reg = <0x80000000 0x16118000 0x0 0x1000>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			clock-names = "int";
+			interrupt-parent = <&eiointc>;
+			interrupts = <41 1>;
+			status = "disabled";
+
+			atim_pwm: atim-pwm {
+				compatible = "loongson,ls2k-pwm-timer";
+				#pwm-cells = <3>;
+				status = "disabled";
+			};
+		};
+
+		timers2: timer@8000000016119000 {
+			compatible = "loongson,loongson-timers";
+			reg = <0x80000000 0x16119000 0x0 0x1000>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			clock-names = "int";
+
+			interrupt-parent = <&eiointc>;
+			interrupts = <42 1>;
+			status = "disabled";
+
+			gtim_pwm: gtim-pwm {
+				compatible = "loongson,ls2k-pwm-timer";
+				#pwm-cells = <3>;
+				status = "disabled";
+			};
 		};
 
 		/*
@@ -213,9 +481,89 @@
 			reg-shift = <0>;
 			clocks = <&clk LS2K0300_CLK_APB>;
 			current-speed = <115200>;
-			interrupt-parent = <&liointc0>;
+			interrupt-parent = <&eiointc>;
 			interrupts = <16 1>;
 			pinctrl-0 = <&uart0_rx_default &uart0_tx_default>;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+
+		/*
+		 * I2C controllers ("loongson,ls2k0300-i2c"): the SoC's "fast
+		 * I2C" peripheral, 32 bit registers (CR1/CR2/DR/SR1/SR2/CCR/
+		 * TRISE) with the start/stop/ack generation in CR1 and level
+		 * status flags in SR1/SR2. The driver polls those flags, so no
+		 * interrupt line is needed. Addresses, pad groups and interrupt
+		 * lines follow mainline Linux,
+		 * arch/loongarch/boot/dts/loongson-2k0300.dtsi:
+		 *
+		 *   i2c0 @ 0x16108000, EIOINTC vector 10, G48/G49
+		 *   i2c1 @ 0x16109000, EIOINTC vector 11, G50/G51
+		 *   i2c2 @ 0x1610a000, EIOINTC vector 12, G52/G53 (or G82/G83)
+		 *   i2c3 @ 0x1610b000, EIOINTC vector 13, G54/G55 (or G84/G85)
+		 *
+		 * The vectors become the flat IRQs 26/27/28/29. The driver
+		 * polls the controller's completion flag and needs no interrupt
+		 * line at all - the property is kept so the node stays faithful
+		 * to mainline and for a future interrupt driven implementation.
+		 *
+		 * Mainline carries the *input* clock in "clock-frequency" (200
+		 * MHz, the APB bus clock). Here that comes from the clock
+		 * controller instead, and "clock-frequency" carries the I2C bus
+		 * speed as in every other Zephyr I2C binding.
+		 */
+		i2c0: i2c@8000000016108000 {
+			compatible = "loongson,ls2k0300-i2c";
+			reg = <0x80000000 0x16108000 0x0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&clk LS2K0300_CLK_I2C>;
+			clock-frequency = <100000>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <26 1>;
+			pinctrl-0 = <&i2c0_g48_default &i2c0_g49_default>;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+
+		i2c1: i2c@8000000016109000 {
+			compatible = "loongson,ls2k0300-i2c";
+			reg = <0x80000000 0x16109000 0x0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&clk LS2K0300_CLK_I2C>;
+			clock-frequency = <100000>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <27 1>;
+			pinctrl-0 = <&i2c1_g50_default &i2c1_g51_default>;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+
+		i2c2: i2c@800000001610a000 {
+			compatible = "loongson,ls2k0300-i2c";
+			reg = <0x80000000 0x1610a000 0x0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&clk LS2K0300_CLK_I2C>;
+			clock-frequency = <100000>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <28 1>;
+			pinctrl-0 = <&i2c2_g52_default &i2c2_g53_default>;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+
+		i2c3: i2c@800000001610b000 {
+			compatible = "loongson,ls2k0300-i2c";
+			reg = <0x80000000 0x1610b000 0x0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&clk LS2K0300_CLK_I2C>;
+			clock-frequency = <100000>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <29 1>;
+			pinctrl-0 = <&i2c3_g54_default &i2c3_g55_default>;
 			pinctrl-names = "default";
 			status = "disabled";
 		};
@@ -226,7 +574,7 @@
 			reg-shift = <0>;
 			clocks = <&clk LS2K0300_CLK_APB>;
 			current-speed = <115200>;
-			interrupt-parent = <&liointc0>;
+			interrupt-parent = <&eiointc>;
 			interrupts = <17 1>;
 			status = "disabled";
 		};
@@ -237,16 +585,16 @@
 			reg-shift = <0>;
 			clocks = <&clk LS2K0300_CLK_APB>;
 			current-speed = <115200>;
-			interrupt-parent = <&liointc0>;
+			interrupt-parent = <&eiointc>;
 			interrupts = <18 1>;
 			status = "disabled";
 		};
 
 		/*
-		 * uart3..uart5 share LIOINTC0 line 2 and uart6..uart9 (except
-		 * the console capable uart6 which has line 3) share lines as
-		 * wired by the SoC; only the lines that are actually usable as
-		 * individual interrupt sources are described here.
+		 * uart3..uart5 and uart7..uart9 are not described yet: every one
+		 * of them has a vector of its own on the EIOINTC (uart3 = vector
+		 * 3 / flat IRQ 19 up to uart9 = vector 9 / flat IRQ 25), so they
+		 * can be added here whenever a board needs them.
 		 */
 		uart6: serial@8000000016101800 {
 			compatible = "ns16550";
@@ -254,8 +602,8 @@
 			reg-shift = <0>;
 			clocks = <&clk LS2K0300_CLK_APB>;
 			current-speed = <115200>;
-			interrupt-parent = <&liointc0>;
-			interrupts = <19 1>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <22 1>;
 			status = "disabled";
 		};
 	};

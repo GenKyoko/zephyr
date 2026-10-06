@@ -40,7 +40,7 @@ int arch_irq_is_enabled(unsigned int irq);
  * Secondary (aggregated) interrupt controllers.
  *
  * SoCs such as the Loongson 2K0300 route most peripheral interrupts through a
- * secondary controller (LIOINTC) that is itself wired to a single CPU line.
+ * secondary controller (EIOINTC / LIOINTC) that is itself wired to a CPU line.
  * The children of such a controller occupy the flat IRQ space above the CPU
  * lines and register themselves here so that irq_enable()/irq_disable() reach
  * the secondary controller instead of ECFG.LIE.

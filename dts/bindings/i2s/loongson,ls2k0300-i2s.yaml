@@ -1,0 +1,52 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 I2S controller ("IIS", user manual chapter 11).
+
+  The block has a register file with a version register, a format register
+  (channel word length, transmit/receive sample depth, bit clock divider), a
+  control register (master/slave, bit order, transmit/receive enable, soft
+  reset, MCLK output enable) and two 8 byte FIFO ports, one per direction. The
+  codec system clock (MCLK) is derived from the controller clock through a
+  fractional divider in "IISConfig1".
+
+  Only the polled FIFO path is implemented: this port has no DMA controller
+  driver, so transfers are paced from the system cycle counter instead of being
+  driven by the DMA engine the vendor's Linux driver uses. The interrupt
+  sources of the block are left disabled - the manual defines them as FIFO
+  overflow/underflow notifications, which a polled driver cannot use as a
+  pacing signal.
+
+compatible: "loongson,ls2k0300-i2s"
+
+include: [i2s-controller.yaml, base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  slave-mode:
+    type: boolean
+    description: |
+      The controller receives the bit clock and the frame clock instead of
+      generating them. The vendor device tree calls this "slave-mode", and the
+      driver of the 2K0300 board leaves it off: its machine driver configures
+      the link with SND_SOC_DAIFMT_CBS_CFS, i.e. this controller is the master
+      and the codec the slave.
+
+      The setting has to match the wiring; a configuration request that asks
+      for the other role is refused with -EINVAL.
+
+  mclk-output:
+    type: boolean
+    description: |
+      Drive the codec system clock (MCLK) on the MCLK pin. Boards whose codec
+      is clocked from a fixed oscillator - as the 2K0300 board is, from a
+      12.288 MHz can - leave this off so that nothing drives that pin.
+
+      The MCLK pin is the first of the I2S pin group (GPIO76 on the 2K0300),
+      which a board muxes through pinctrl like the other four.

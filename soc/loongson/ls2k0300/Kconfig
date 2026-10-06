@@ -23,7 +23,7 @@ config LOONGARCH_UBOOT_UIMAGE
 
 	  u-boot calls the LoongArch architecture "loongarch" in its image
 	  architecture table, so a plain legacy uImage works for LoongArch too.
-	  The header is produced by soc/loongson/ls2k300/gen_uimage.py, which
+	  The header is produced by soc/loongson/ls2k0300/gen_uimage.py, which
 	  takes the load address and the entry point from zephyr.elf; u-boot
 	  relocates the payload to the load address stored in the header, so
 	  the file can be transferred to any free address first.
@@ -34,8 +34,8 @@ config LS2K0300_RX_CHECK
 	  Run one non blocking check three seconds after the application starts,
 	  from a work queue item so it cannot starve anything:
 
-	    1. print IER / IIR / LSR plus the LIOINTC enable status, the pending
-	       register and ESTAT,
+	    1. print IER / IIR / LSR plus the EIOINTC enable, routing, device
+	       status and routed status, and ESTAT,
 	    2. put the console UART into internal loopback (MCR bit 4) and write
 	       one byte to it,
 
@@ -46,7 +46,7 @@ config LS2K0300_RX_CHECK
 	  ESTAT is set while the byte stays, the dispatch is the break.
 
 	  Needed because every static check said the path was enabled - IER bit 0
-	  set, LIOINTC child 0 enabled, ECFG bit 2 set, paging off - while the
+	  set, EIOINTC vector 0 enabled, ECFG bit 3 set, paging off - while the
 	  shell never received a character.
 
 config LS2K0300_CONSOLE_GUARD

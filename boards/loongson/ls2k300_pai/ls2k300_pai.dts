@@ -72,6 +72,7 @@
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &ram0;
+		zephyr,display = &ssd1306;
 	};
 
 	ram0: memory@9000000003000000 {
@@ -103,4 +104,125 @@
 /* GPIO96..105 */
 &gpio3 {
 	status = "okay";
+};
+
+/*
+ * I2C0 on GPIO48 (SCL) and GPIO49 (SDA), both switched to their primary
+ * function by the pin mux block. The bus needs external pull-ups; with none the
+ * controller still runs and simply sees no targets. The other three controllers
+ * share the same header pins (i2c1 on GPIO50/51, i2c2 on GPIO52/53, i2c3 on
+ * GPIO54/55) and stay disabled until something uses them.
+ */
+&i2c0 {
+	status = "okay";
+};
+
+/*
+ * SSD1306 OLED on i2c1: GPIO50 = SCL, GPIO51 = SDA, both switched to the I2C
+ * function by the pin mux block. The panel is the usual 128x64 module on its
+ * default address 0x3c; the controller parameters follow the
+ * seeed_xiao_expansion_board shield, which drives the same part.
+ *
+ * The bus does not drive itself: external pull-ups on SCL/SDA are required.
+ * The controller runs at its 100 kHz default here; the panel also handles
+ * 400 kHz, which needs a correspondingly stronger pull-up (override
+ * clock-frequency in &i2c1 if the wiring supports it).
+ *
+ * With no panel attached the driver fails fast (the address byte is NACKed, so
+ * it sees -ENXIO and not a bus timeout) and the display device simply stays
+ * unready - the console is not affected.
+ */
+&i2c1 {
+	status = "okay";
+
+	ssd1306: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+
+		width = <128>;
+		height = <64>;
+
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		prechargep = <0x22>;
+		segment-remap;
+		com-invdir;
+	};
+};
+
+/*
+ * Both SoC timer blocks as PWM sources, each with its PWM child enabled so that
+ * the driver binds to it. Both run off the APB clock (100 MHz) and are driven
+ * from the console - by node label, because the two blocks are separate
+ * controllers and therefore separate PWM devices:
+ *
+ *   pwm frequency atim_pwm 3        # cycle unit of the ATIM (100000000)
+ *   pwm usec atim_pwm 3 1000 500    # 1 kHz, 50 % on ATIM channel 3
+ *   pwm usec gtim_pwm 1 2000 1000   # 500 Hz, 50 % on GTIM channel 2
+ *
+ * Zephyr numbers PWM channels from zero, so chip channel CH2 is index 1 and CH3
+ * is index 2. Keep in mind that all channels of one block share the prescaler
+ * and the reload register: a second channel on the same block may only be given
+ * the same period (the driver refuses anything else with -EBUSY). The two blocks
+ * are independent of each other, which is what makes two frequencies possible.
+ *
+ * ATIM channel 3 is muxed to GPIO83, the pin the vendor device tree calls
+ * "atim3_pin_m1" and the pin Linux switches for the LCD backlight on the 99pi
+ * board; "atim3_g30_default" is the same channel on GPIO30.
+ *
+ * GTIM channel 2 ("TIM2_CH2" in the vendor tables) is muxed to GPIO88, the
+ * vendor's "gtim2_pin_m1"; "gtim2_g35_default" is the same channel on GPIO35.
+ *
+ * Both pins are free on this board: the LED is on GPIO54, the console on
+ * GPIO40/41 and both I2C buses on GPIO48..51. A board that uses i2c2/i2c3 on
+ * their alternative G82..G85 group must move the PWM channels elsewhere - the
+ * SoC device tree lists the pins of all channels next to these states.
+ */
+&timers1 {
+	status = "okay";
+	/*
+	 * Channel 3 and its complementary output: CH3 on GPIO83 (atim3_pin_m1)
+	 * and CH3N on GPIO86 (atim3n_pin_m1), the pair the vendor device tree
+	 * muxes for the 99pi's backlight. The driver drives both: configuring
+	 * ATIM channel 3 enables CC3E and CC3NE, so the two pins output the
+	 * complementary pair of one channel. Drop the second phandle if the
+	 * board only needs the single-ended output, and note that no dead time
+	 * is inserted between them (BDTR.DTG stays 0).
+	 */
+	pinctrl-0 = <&atim3_g83_default &atim3n_g86_default>;
+	pinctrl-names = "default";
+};
+
+&atim_pwm {
+	status = "okay";
+};
+
+&timers2 {
+	status = "okay";
+	pinctrl-0 = <&gtim2_g88_default>;
+	pinctrl-names = "default";
+};
+
+&gtim_pwm {
+	status = "okay";
+};
+
+/*
+ * I2S controller, with the four interface pins it needs (bit clock, frame
+ * clock, data in, data out). The MCLK pin (GPIO76) is left alone: this board
+ * clocks its ES8388 codec from a fixed 12.288 MHz oscillator, so driving the
+ * controller's MCLK output would put two drivers on that net.
+ *
+ * The codec itself cannot be brought up yet: Zephyr has no ES8388 driver, so
+ * the controller is enabled for register-level checks and for the digital
+ * loopback test - jumper data out (GPIO80) to data in (GPIO79) and run
+ * samples/drivers/i2s/echo with the "i2s_rxtx" label this node carries.
+ */
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s_bclk_g77_default &i2s_lr_g78_default &i2s_di_g79_default
+		     &i2s_do_g80_default>;
+	pinctrl-names = "default";
 };

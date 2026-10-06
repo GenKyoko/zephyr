@@ -22,7 +22,7 @@ description: |
     0 GPIO, 1 first alternate, 2 second alternate, 3 primary function.
 
   One pin per state keeps the devicetree cell indices literal, which the "pinmux"
-  parsing in soc/loongson/ls2k300/pinctrl_soc.h relies on.
+  parsing in soc/loongson/ls2k0300/pinctrl_soc.h relies on.
 
 compatible: "loongson,ls2k0300-pinmux"
 

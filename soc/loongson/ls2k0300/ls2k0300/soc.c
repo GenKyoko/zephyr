@@ -120,7 +120,7 @@ static int ls2k0300_console_fifo_init(void)
 	/*
 	 * The console pins, GPIO40 (uart0_rx) and GPIO41 (uart0_tx), on their
 	 * primary function. The serial driver does apply the UART's pinctrl state
-	 * through the SoC hook in soc/loongson/ls2k300/pinctrl.c, but that single
+	 * through the SoC hook in soc/loongson/ls2k0300/pinctrl.c, but that single
 	 * path is the whole difference between a shell that can be typed into and
 	 * a console that only prints: u-boot configures the pins it drives and on
 	 * this board it left uart0_rx in its GPIO setting, which is exactly the
@@ -174,10 +174,12 @@ SYS_INIT(ls2k0300_console_fifo_init, PRE_KERNEL_2, 0);
  * When the byte is still there, the samples say which link failed:
  *
  *   IIR = 0x01                          the UART does not raise the request
- *   IIR = 0x04 but pending bit 0 clear  the request does not reach the controller
- *   pending bit 0 set but ESTAT bit 2
- *   clear                               the parent line (HWI0) is the break
- *   ESTAT bit 2 set                     dispatch or the child ISR is the break
+ *   device status bit 0 clear           the request does not reach the EIOINTC
+ *   device status set but the core
+ *   status bit 0 clear                  the vector is masked or not routed
+ *   core status set but ESTAT bit 3
+ *   clear                               the parent line (HWI1) is the break
+ *   ESTAT bit 3 set                     dispatch or the child ISR is the break
  *
  * The check holds the scheduler locked: without that the shell's own output is
  * swallowed by the receiver in loopback mode and comes back as typed input, so
@@ -187,11 +189,8 @@ SYS_INIT(ls2k0300_console_fifo_init, PRE_KERNEL_2, 0);
  */
 
 /* All of these live in the uncached direct map window */
-#define RX_UART0     0x8000000016100000UL
-#define RX_INTC0     0x8000000016001400UL
-#define RX_INTC1     0x8000000016001440UL
-#define RX_INTC0_ISR 0x8000000016001040UL
-#define RX_INTC1_ISR 0x8000000016001048UL
+#define RX_UART0   0x8000000016100000UL
+#define RX_EIOINTC 0x8000000016000000UL
 
 /* 8250 register offsets */
 #define RX_IER 0x01U
@@ -206,22 +205,33 @@ SYS_INIT(ls2k0300_console_fifo_init, PRE_KERNEL_2, 0);
 #define RX_MCR_LOOP   0x10U /* internal loopback */
 #define RX_MCR_OUT1   0x04U /* the other modem control output, as a gate */
 
-/* LIOINTC registers, offsets verified against Linux' irq-loongson-liointc.c */
-#define RX_INTC_EN_STATUS 0x24U
-#define RX_INTC_ENABLE    0x28U
-#define RX_INTC_DISABLE   0x2cU
-#define RX_INTC_POL       0x30U
-#define RX_INTC_EDGE      0x34U
+/*
+ * EIOINTC registers, offsets within the system register window (2K0300 user
+ * manual, table 3-45 and 3-51). The console UART owns vector 0, and the
+ * controller is cascaded on CPU line 3, so its request shows up as ESTAT.IS[3].
+ * The enable register is a plain read/write vector mask: it is written back
+ * read-modified-write, the way the driver's enable/disable does it too.
+ */
+#define RX_INTC_CFG0     0x0100U /* chip general configuration register 0 */
+#define RX_INTC_CFG0_EN  BIT(19) /* extioi_en: 1 = extended interrupts live */
+#define RX_INTC_MAP      0x14c0U /* vector group routing */
+#define RX_INTC_IEN      0x1600U /* enable of vectors 0..31 */
+#define RX_INTC_POL      0x1640U /* polarity of vectors 0..31 */
+#define RX_INTC_ISR      0x1700U /* device status, not gated by the enable mask */
+#define RX_INTC_CORE_ISR 0x1800U /* routed to this core, write 1 clears */
+#define RX_INTC_VECTOR   BIT(0)
+#define RX_INTC_LINE     BIT(3)
 
 struct rx_state {
 	uint8_t ier;
 	uint8_t iir;
 	uint8_t lsr;
 	uint8_t mcr;
-	uint32_t pend0;
-	uint32_t pend1;
-	uint32_t en0;
-	uint32_t en1;
+	uint32_t isr;
+	uint32_t core_isr;
+	uint32_t ien;
+	uint32_t map;
+	uint32_t cfg0;
 	uint32_t est;
 };
 
@@ -231,19 +241,20 @@ static void rx_state_read(struct rx_state *s)
 	s->iir = sys_read8(RX_UART0 + RX_IIR);
 	s->lsr = sys_read8(RX_UART0 + RX_LSR);
 	s->mcr = sys_read8(RX_UART0 + RX_MCR);
-	s->pend0 = sys_read32(RX_INTC0_ISR);
-	s->pend1 = sys_read32(RX_INTC1_ISR);
-	s->en0 = sys_read32(RX_INTC0 + RX_INTC_EN_STATUS);
-	s->en1 = sys_read32(RX_INTC1 + RX_INTC_EN_STATUS);
+	s->isr = sys_read32(RX_EIOINTC + RX_INTC_ISR);
+	s->core_isr = sys_read32(RX_EIOINTC + RX_INTC_CORE_ISR);
+	s->ien = sys_read32(RX_EIOINTC + RX_INTC_IEN);
+	s->map = sys_read32(RX_EIOINTC + RX_INTC_MAP);
+	s->cfg0 = sys_read32(RX_EIOINTC + RX_INTC_CFG0);
 	s->est = (uint32_t)loongarch_csr_read(LOONGARCH_CSR_ESTAT);
 }
 
 static void rx_state_print(const char *tag, const struct rx_state *s)
 {
-	printk("RX %-7s IER=%02x IIR=%02x LSR=%02x MCR=%02x | pend0=%08x pend1=%08x "
-	       "en0=%08x en1=%08x ESTAT=%08x\n",
-	       tag, s->ier, s->iir, s->lsr, s->mcr, s->pend0, s->pend1,
-	       s->en0, s->en1, s->est);
+	printk("RX %-7s IER=%02x IIR=%02x LSR=%02x MCR=%02x | isr=%08x core=%08x "
+	       "ien=%08x map=%08x cfg0=%08x ESTAT=%08x\n",
+	       tag, s->ier, s->iir, s->lsr, s->mcr, s->isr, s->core_isr,
+	       s->ien, s->map, s->cfg0, s->est);
 }
 
 /*
@@ -267,10 +278,10 @@ static void rx_feed(uint8_t fcr, uint8_t mcr, struct rx_state *s)
 
 /*
  * Run the check and, when a link is broken, try the neighbouring
- * configurations that could be the reason for it. Only the console's own child
- * (bit 0 of liointc0) and its counterpart on the second controller are touched,
- * and child 0 is masked for the controller sweep, so that a wrong polarity
- * cannot turn into an interrupt storm on the parent handler.
+ * configurations that could be the reason for it. Only the console's own vector
+ * (bit 0 of the EIOINTC) is touched: it is masked while the register state is
+ * sampled, so that a wrong polarity cannot turn into an interrupt storm on the
+ * parent handler, and it is put back into service before the check returns.
  */
 static void rx_chain_check(const char *tag)
 {
@@ -288,17 +299,20 @@ static void rx_chain_check(const char *tag)
 	taken = (s.lsr & 0x1U) == 0U;
 
 	if (!taken) {
+		uint32_t ien = sys_read32(RX_EIOINTC + RX_INTC_IEN);
+
 		/* The byte is still in the FIFO, so the chain broke before the
-		 * ISR. Mask the console's own child - and only that one - so
+		 * ISR. Mask the console's own vector - and only that one - so
 		 * the request cannot be handled while the register state is
-		 * sampled; the pending bit answers anyway, it is independent of
-		 * the enable bit.
+		 * sampled. The device status answers anyway, it is not gated by
+		 * the enable mask; the routed status is, which is exactly what
+		 * separates the two samples.
 		 */
-		sys_write32(BIT(0), RX_INTC0 + RX_INTC_DISABLE);
+		sys_write32(ien & ~RX_INTC_VECTOR, RX_EIOINTC + RX_INTC_IEN);
 		rx_feed(RX_FCR_TRIG1, 0U, &s);
 		rx_state_print("masked", &s);
 
-		if ((s.pend0 & 0x1U) == 0U) {
+		if ((s.isr & RX_INTC_VECTOR) == 0U) {
 			/* Nothing reaches the controller. UART side suspects:
 			 * the FIFO trigger logic, and the OUT1 gate.
 			 */
@@ -308,37 +322,25 @@ static void rx_chain_check(const char *tag)
 			rx_state_print("out1", &s);
 		}
 
-		if ((s.pend0 & 0x1U) == 0U) {
-			/* Still nothing: try the other input polarity, the other
-			 * trigger type, and the second controller instance in
-			 * case the console line is aggregated there.
+		if (((s.isr & RX_INTC_VECTOR) != 0U) &&
+		    ((s.core_isr & RX_INTC_VECTOR) == 0U)) {
+			/* The controller sees the request but nothing reaches
+			 * the core: the other input polarity is the one thing
+			 * left to try on a level source.
 			 */
-			uint32_t pol = sys_read32(RX_INTC0 + RX_INTC_POL);
-			uint32_t edge = sys_read32(RX_INTC0 + RX_INTC_EDGE);
+			uint32_t pol = sys_read32(RX_EIOINTC + RX_INTC_POL);
 
-			sys_write32(pol | BIT(0), RX_INTC0 + RX_INTC_POL);
+			sys_write32(pol | RX_INTC_VECTOR, RX_EIOINTC + RX_INTC_POL);
 			k_busy_wait(200);
 			rx_state_read(&s);
 			rx_state_print("pol=1", &s);
-			sys_write32(pol, RX_INTC0 + RX_INTC_POL);
-
-			sys_write32(edge | BIT(0), RX_INTC0 + RX_INTC_EDGE);
-			k_busy_wait(200);
-			rx_state_read(&s);
-			rx_state_print("edge=1", &s);
-			sys_write32(edge, RX_INTC0 + RX_INTC_EDGE);
-
-			sys_write32(BIT(0), RX_INTC1 + RX_INTC_ENABLE);
-			k_busy_wait(200);
-			rx_state_read(&s);
-			rx_state_print("intc1", &s);
-			sys_write32(BIT(0), RX_INTC1 + RX_INTC_DISABLE);
+			sys_write32(pol, RX_EIOINTC + RX_INTC_POL);
 		}
 
-		/* Child back into service: a request that is still pending now
+		/* Vector back into service: a request that is still pending now
 		 * has to reach the ISR on its own.
 		 */
-		sys_write32(BIT(0), RX_INTC0 + RX_INTC_ENABLE);
+		sys_write32(ien | RX_INTC_VECTOR, RX_EIOINTC + RX_INTC_IEN);
 		k_busy_wait(2000);
 		rx_state_read(&s);
 		rx_state_print("unmask", &s);
@@ -354,17 +356,22 @@ static void rx_chain_check(const char *tag)
 		why = "chain works, the ISR took the loopback byte";
 	} else if ((s.iir & 0x0fU) == 0x01U) {
 		why = "the UART never raises the request (IIR=01)";
-	} else if ((s.pend0 & 0x1U) == 0U) {
-		why = "the request does not reach LIOINTC (pending0 stays 0)";
-	} else if (((uint32_t)loongarch_csr_read(LOONGARCH_CSR_ESTAT) & 0x4U) == 0U) {
-		why = "the parent line HWI0 never asserts (ESTAT bit 2)";
+	} else if ((s.cfg0 & RX_INTC_CFG0_EN) == 0U) {
+		why = "the extended interrupt path is off (cfg0 bit 19)";
+	} else if ((s.isr & RX_INTC_VECTOR) == 0U) {
+		why = "the request does not reach the EIOINTC (device status stays 0)";
+	} else if ((s.core_isr & RX_INTC_VECTOR) == 0U) {
+		why = "the vector is masked or not routed (core status stays 0)";
+	} else if ((loongarch_csr_read(LOONGARCH_CSR_ESTAT) & RX_INTC_LINE) == 0U) {
+		why = "the parent line HWI1 never asserts (ESTAT bit 3)";
 	} else {
 		why = "dispatch or the ISR is the break";
 	}
 
 	/* Print before unlocking so the shell cannot interleave itself */
-	printk("RX %s verdict: %s (LSR.DR=%u IIR=%02x pend0=%u ESTAT=%08x)\n",
-	       tag, why, s.lsr & 0x1U, s.iir, s.pend0 & 0x1U,
+	printk("RX %s verdict: %s (LSR.DR=%u IIR=%02x isr=%u core=%u ESTAT=%08x)\n",
+	       tag, why, s.lsr & 0x1U, s.iir, (uint32_t)(s.isr & RX_INTC_VECTOR),
+	       (uint32_t)(s.core_isr & RX_INTC_VECTOR),
 	       (uint32_t)loongarch_csr_read(LOONGARCH_CSR_ESTAT));
 
 	k_sched_unlock();
@@ -401,8 +408,8 @@ static void rx_chain_check(const char *tag)
  * the peripheral windows and the gdb stub exposes no CSR registers):
  *
  *   1. dumps the CSRs and the timer state as full 64 bit values,
- *   2. reads the LIOINTC state - read only: an earlier version wrote into the
- *      enable register, and a level triggered child that nothing handles then
+ *   2. reads the EIOINTC state - read only: an earlier version wrote into the
+ *      enable register, and a level triggered vector that nothing handles then
  *      stormed the parent handler until the console died,
  *   3. watches the tick health with sys_clock_elapsed(), the number of ticks
  *      that have passed but not been announced yet,
@@ -416,21 +423,27 @@ static void rx_chain_check(const char *tag)
  * application's main(). It never sleeps and never polls for seconds, so it
  * cannot starve the shell.
  */
-#define LS2K_DIAG_UART0     0x8000000016100000UL
-#define LS2K_DIAG_PINMUX    0x8000000016000490UL
-#define LS2K_DIAG_INTC0     0x8000000016001400UL
-#define LS2K_DIAG_INTC0_ISR 0x8000000016001040UL
-#define LS2K_DIAG_GPIO      0x8000000016104000UL
+#define LS2K_DIAG_UART0   0x8000000016100000UL
+#define LS2K_DIAG_PINMUX  0x8000000016000490UL
+#define LS2K_DIAG_EIOINTC 0x8000000016000000UL
+#define LS2K_DIAG_GPIO    0x8000000016104000UL
 
 /* GPIO byte regions, one byte per absolute pin (gpio-loongson-64bit layout) */
 #define LS2K_GPIO_CONF 0x800U
 #define LS2K_GPIO_OUT  0x900U
 #define LS2K_GPIO_IN   0xa00U
 
-/* LIOINTC registers, offsets verified against Linux' irq-loongson-liointc.c */
-#define LS2K_INTC_EN_STATUS 0x24U
-#define LS2K_INTC_ENABLE    0x28U
-#define LS2K_INTC_DISABLE   0x2cU
+/*
+ * EIOINTC registers, offsets within the system register window (2K0300 user
+ * manual, table 3-45 and 3-51). Vector 0 belongs to the console UART and the
+ * controller is cascaded on CPU line 3.
+ */
+#define LS2K_INTC_CFG0     0x0100U
+#define LS2K_INTC_CFG0_EN  BIT(19)
+#define LS2K_INTC_MAP      0x14c0U
+#define LS2K_INTC_IEN      0x1600U
+#define LS2K_INTC_ISR      0x1700U
+#define LS2K_INTC_CORE_ISR 0x1800U
 
 #define LS2K_CRMD_PLV(crmd)  ((crmd) & 0x3U)
 #define LS2K_CRMD_IE(crmd)   (((crmd) >> 2) & 0x1U)
@@ -523,32 +536,30 @@ static int ls2k0300_irq_diag(void)
 	       (uint32_t)CONFIG_SYS_CLOCK_TICKS_PER_SEC,
 	       (uint32_t)IS_ENABLED(CONFIG_TICKLESS_KERNEL));
 
-	/* 1. LIOINTC0: is the enable register writable, and does irq_enable() -
-	 *    which the ns16550 driver does call - actually land here?
+	/* 1. EIOINTC: is the extended path on, does the enable that irq_enable()
+	 *    - which the ns16550 driver does call - land here, and does vector 0
+	 *    reach the core on the CPU line the node cascades on?
 	 */
-	printk("DIAG intc0 before:      en_st=%08x en=%08x route0=%02x isr=%08x\n",
-	       sys_read32(LS2K_DIAG_INTC0 + LS2K_INTC_EN_STATUS),
-	       sys_read32(LS2K_DIAG_INTC0 + LS2K_INTC_ENABLE),
-	       sys_read8(LS2K_DIAG_INTC0), sys_read32(LS2K_DIAG_INTC0_ISR));
+	printk("DIAG eiointc: cfg0=%08x[extioi_en=%u] map=%08x ien=%08x core=%08x isr=%08x\n",
+	       sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_CFG0),
+	       (sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_CFG0) & LS2K_INTC_CFG0_EN) ? 1U : 0U,
+	       sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_MAP),
+	       sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_IEN),
+	       sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_CORE_ISR),
+	       sys_read32(LS2K_DIAG_EIOINTC + LS2K_INTC_ISR));
 
 	/*
 	 * Read only, deliberately.
 	 *
-	 * An earlier version of this diagnostic also wrote BIT(0) and BIT(1)
-	 * into the enable register, to see whether the register was writable and
-	 * whether irq_enable() reached the driver. BIT(1) unmasks LIOINTC child
-	 * 1, which nothing handles: a level triggered child that stays asserted
-	 * re-enters the parent handler forever, so the interrupt storm starved
-	 * the shell and input died right after the diagnostic had printed.
-	 * Never write to an interrupt controller's enable register from a
-	 * diagnostic - writing BIT(0) for uart0 would have been enough, and even
-	 * that belongs to the driver that owns the line.
+	 * An earlier version of this diagnostic also unmasked a second vector to
+	 * see whether the register was writable and whether irq_enable() reached
+	 * the driver. That vector was handled by nothing: a level triggered
+	 * source that stays asserted re-enters the parent handler forever, so
+	 * the interrupt storm starved the shell and input died right after the
+	 * diagnostic had printed. Never write to an interrupt controller's
+	 * enable register from a diagnostic - even the console's own vector
+	 * belongs to the driver that owns the line.
 	 */
-	printk("DIAG intc0 state: route0=%02x en_st=%08x isr=%08x est=%08x\n",
-	       sys_read8(LS2K_DIAG_INTC0),
-	       sys_read32(LS2K_DIAG_INTC0 + LS2K_INTC_EN_STATUS),
-	       sys_read32(LS2K_DIAG_INTC0_ISR),
-	       (uint32_t)loongarch_csr_read(LOONGARCH_CSR_ESTAT));
 
 	/* 2. Tick health: elapsed is the number of ticks not announced yet, so it
 	 *    stays near zero when the timer and sys_clock_announce() work.

@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 real time clock.
+
+  The block contains two counters: the TOY ("time of year") counter, which is
+  the wall clock the driver reads and writes, and a free running counter clocked
+  by the 32.768 kHz crystal. Register offsets within "reg" are the ones the
+  2K0300 user manual documents in chapter 25 and match mainline Linux'
+  rtc-loongson.c:
+
+    0x20  sys_toytrim   must be written 0 by software
+    0x24  sys_toywrite0 TOY value, write only
+    0x28  sys_toywrite1 TOY year, write only
+    0x2c  sys_toyread0  TOY value, read only
+    0x30  sys_toyread1  TOY year, read only
+    0x40  sys_rtcctrl   TOY/RTC/crystal enables plus write status
+    0x60  sys_rtctrim   must be written 0 by software
+    0x64  sys_rtcwrite0 RTC counter, write only
+    0x68  sys_rtcread0  RTC counter, read only
+
+  The 2K0300 variant has no working TOY match alarm (mainline Linux carries it
+  under LOONGSON_RTC_ALARM_WORKAROUND and clears RTC_FEATURE_ALARM), so the
+  block is used as a plain wall clock and no interrupt is described. The RTC
+  interrupt sources the manual lists (RTC-INT0..2, RTC-TICK, TOY-TICK in the
+  interrupt tables) stay unused for the same reason.
+
+compatible: "loongson,ls2k0300-rtc"
+
+include: [rtc-device.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true

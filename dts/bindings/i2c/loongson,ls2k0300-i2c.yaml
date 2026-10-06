@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 "fast I2C" controller.
+
+  The peripheral has 32 bit registers on a 4 byte stride
+  (CR1/CR2/OAR/DR/SR1/SR2/CCR/TRISE/FLTR): start, stop and acknowledge are
+  generated through CR1, and the transfer state is in the level flags of SR1
+  and SR2. The Zephyr driver polls those flags, so the controller needs no
+  interrupt line - "interrupts" is carried to stay faithful to mainline and for
+  a future interrupt driven implementation.
+
+  The input clock comes from "clocks" (the APB bus clock). It is programmed
+  into CR2.FREQ in MHz and used to derive CCR, which is why "clock-frequency"
+  keeps its usual Zephyr meaning of the I2C bus speed.
+
+  Mainline names this compatible "loongson,ls2k0300-i2c"
+  (drivers/i2c/busses/i2c-ls2x-v2.c). The 6.12 device tree still called it
+  "loongson,lsfs-i2c", which is a different controller - the "loongson,ls2k-i2c"
+  block of drivers/i2c/busses/i2c-ls2x.c with byte registers at 0x00..0x04.
+
+compatible: "loongson,ls2k0300-i2c"
+
+include: [i2c-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-frequency:
+    description: |
+      Initial bus clock in Hz. The controller supports standard mode (100 kHz)
+      and fast mode (400 kHz).
+
+examples:
+  - |
+    i2c1: i2c@8000000016109000 {
+            compatible = "loongson,ls2k0300-i2c";
+            reg = <0x80000000 0x16109000 0x0 0x1000>;
+            clocks = <&clk LS2K0300_CLK_I2C>;
+            clock-frequency = <100000>;
+            pinctrl-0 = <&i2c1_g50_default &i2c1_g51_default>;
+            pinctrl-names = "default";
+            status = "okay";
+    };

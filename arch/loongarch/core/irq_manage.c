@@ -64,7 +64,7 @@ int z_loongarch_enter_irq(unsigned int int_vec)
 }
 
 /*
- * Secondary interrupt controllers (e.g. the Loongson LIOINTC) own the IRQ
+ * Secondary interrupt controllers (e.g. the Loongson EIOINTC) own the IRQ
  * numbers above the CPU lines. They register themselves at init so that the
  * generic irq_enable()/irq_disable() APIs are routed to them.
  */

@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson EIOINTC - the extended I/O interrupt controller, called "EXTIOI"
+  in the 2K0300 (LS2K0300) user manual. It is the modern replacement of the
+  legacy LIOINTC: every peripheral interrupt gets its own vector (the 2K0300
+  wires up to 128 of them, see table 3-48 of the manual) instead of sharing
+  one of the 64 aggregated LIOINTC lines.
+
+  The vector set is forwarded to one LoongArch CPU interrupt line (INT0..INT3,
+  i.e. a LoongArch IP line delivered through ESTAT.IS/ECFG.LIE). Unlike the
+  LIOINTC, the controller does not aggregate the sources: it routes them per
+  group of 32 vectors through its map register, and reports the ones that
+  reached the core in a per-core status register.
+
+  The register file is part of the SoC system register window, so "reg"
+  describes that window; the offsets the driver uses are the ones documented
+  for the SoC (EIOINTC manual chapter "扩展 IO 中断"):
+
+    0x0100  chip general configuration register 0 (bit 19 = extioi_en)
+    0x14c0  EXTIOI_MAP, routing of the four vector groups
+    0x1600  EXTIOI_IEN0..3, interrupt enable
+    0x1640  EXTIOI_POL0..3, level polarity
+    0x1800  EXTIOI_CORE_ISR0..3, routed status (write 1 clears)
+
+  Vectors are numbered in the SoC-wide flat Zephyr IRQ space, starting at the
+  value of "zephyr,irq-base" (vector N of this controller is
+  zephyr,irq-base + N).
+
+compatible: "loongson,ls2k0300-eiointc"
+
+include: [interrupt-controller.yaml, base.yaml]
+
+interrupt-cells:
+  - irq
+  - priority
+
+properties:
+  reg:
+    required: true
+
+  zephyr,irq-base:
+    type: int
+    required: true
+    description: |
+      Flat Zephyr IRQ number assigned to vector 0 of this controller.
+
+  loongson,extioi-enable-bit:
+    type: int
+    default: 19
+    description: |
+      Bit of the chip general configuration register 0 (offset 0x100 of the
+      register window) that enables the extended interrupt path. The 2K0300
+      documents bit 19 ("extioi_en", default 0, off at reset), so the driver
+      sets it as soon as the controller is initialized.

@@ -15,8 +15,27 @@ CONFIG_MINIMAL_LIBC=y
 # The LA264 core integrates an FPU
 CONFIG_FPU=y
 
-# LIOINTC forwards the peripheral interrupts of the SoC
-CONFIG_INTC_LIOINTC=y
+# EIOINTC ("EXTIOI") is the interrupt controller of the SoC: it gives every
+# peripheral interrupt a vector of its own, where the legacy LIOINTC lines
+# aggregate several sources each (uart2..uart5 share one line, for instance).
+# It is the only controller this port models; the LIOINTC driver was removed
+# once the EIOINTC took over.
+CONFIG_INTC_EIOINTC=y
+
+# The SoC has a battery backed RTC (the TOY wall clock the driver reads and
+# writes); the driver follows its device tree node, but the RTC subsystem
+# itself is off by default.
+CONFIG_RTC=y
+
+# PWM: the board muxes ATIM channel 3 (see the board device tree) and uses it
+# through the "loongson,ls2k-pwm-timer" child of the "timers1" block.
+CONFIG_PWM=y
+
+# I2S: the board brings out the four interface pins of the controller. The
+# codec of the board (an ES8388 on i2c2) has no Zephyr driver yet, so the
+# controller is used for register level checks and for the digital loopback test
+# in which data out is jumpered to data in.
+CONFIG_I2S=y
 
 # GPIO + gpio-leds (LED0 on GPIO43 = gpio1 pin 11)
 CONFIG_GPIO=y

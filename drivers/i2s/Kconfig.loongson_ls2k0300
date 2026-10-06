@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config I2S_LOONGSON_LS2K0300
+	bool "Loongson 2K0300 I2S driver"
+	default y
+	depends on DT_HAS_LOONGSON_LS2K0300_I2S_ENABLED
+	help
+	  Enable the Loongson 2K0300 I2S controller ("IIS", user manual chapter
+	  11) as a stereo, I2S format, master or slave controller.
+
+	  The driver is polled: this port has no DMA controller driver, so the
+	  two 8 byte FIFOs are fed one 32 bit word at a time, paced from the
+	  system cycle counter. i2s_write() therefore blocks for the duration of
+	  the buffer, and both directions have to be serviced from the same
+	  thread. The transmit and receive interrupts of the block stay disabled
+	  - they report FIFO overflow/underflow, which cannot be used as a pacing
+	  signal.

@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config PWM_LOONGSON_LS_TIMER
+	bool "Loongson 2K0300 ATIM/GTIM PWM driver"
+	default y
+	depends on DT_HAS_LOONGSON_LS2K_PWM_TIMER_ENABLED
+	help
+	  Enable the PWM front end of the Loongson 2K0300 ATIM/GTIM timer blocks.
+	  The driver is bound to the "loongson,ls2k-pwm-timer" child node of a
+	  "loongson,loongson-timers" block, which is how the vendor device tree
+	  and Linux describe it (drivers/mfd/loongson-timers.c plus
+	  drivers/pwm/pwm-ls-timer.c); registers, clock and pinctrl are taken from
+	  that parent node.
+
+	  The number of channels and the width of the auto reload register are
+	  probed at run time. Capture, break inputs and the complementary outputs
+	  of the ATIM are not implemented.
