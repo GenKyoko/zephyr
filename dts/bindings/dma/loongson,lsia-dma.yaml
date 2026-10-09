@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# LSIA DMA controller of the 2K0300 (vendor compatible "loongson,lsia-dma",
+# drivers/dma/lsia_dma.c). Eight channels; per channel four registers 0x14
+# apart - CCR at 0x08, CNDTR at 0x0c, CPAR at 0x10, CMAR at 0x14 - and a four
+# bit status nibble per channel in ISR (0x00) and IFCR (0x04), transfer
+# complete in bit 1 and half transfer in bit 2.
+#
+# There is no request select register: which peripheral drives which channel
+# request is fixed in silicon, which is why a consumer only names a channel
+# here. The I2S data requests are on channel 1 (transmit) and channel 0
+# (receive), the mapping the vendor device tree uses.
+#
+# Each channel has an interrupt line of its own - APB-DMA0..7 sit on vectors
+# 45..52 of table 3-48, 61..68 in the flat, SoC wide numbering the
+# "interrupts" property carries (hardware confirmed via the EIOINTC raw
+# status; the vendor tree's liointc0 23..30 are legacy-controller input
+# numbers, not these vectors).
+
+description: |
+  LSIA DMA controller (Loongson 2K0300 series)
+
+compatible: "loongson,lsia-dma"
+
+include: base.yaml
+
+properties:
+  reg:
+    description: |
+      Register block: ISR at 0x00, IFCR at 0x04, then the channel registers
+      from 0x08 onwards, four per channel 0x14 apart (CCR, CNDTR, CPAR, CMAR).
+    required: true
+
+  dma-channels:
+    type: int
+    description: Number of channels
+    required: true
+
+  interrupts:
+    required: true
+
+dma-cells:
+  # A channel number, and a seed for that channel's configuration register (its
+  # configuration and interrupt-enable bits) the way the vendor driver takes it
+  # from a second cell: 0xaf is its I2S record channel (circular, memory
+  # increments, peripheral to memory) and 0xbf the play channel (the same with
+  # the direction bit).
+  - channel
+  - config
+
+loongson,dma-cells:
+  # The namespaced form of the same two cells ("tx-channel", "rx-channel") for
+  # the "loongson,dmas" property, which the I2S node uses because the generic
+  # "dmas" property is taken by the audio controller binding.
+  - tx-channel
+  - rx-channel

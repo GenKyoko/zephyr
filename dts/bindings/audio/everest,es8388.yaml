@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Everest Semiconductor ES8388 stereo audio codec (I2C control interface).
+
+  The codec's data interface is I2S: BCLK, LRCLK and the data lines are wired to
+  an I2S controller, and the control registers are reached over I2C, which is
+  what this binding and driver cover. Whether the codec or the I2S controller
+  drives BCLK/LRCLK is decided at runtime, through the frame clock and bit clock
+  options of the configuration the application passes to
+  audio_codec_configure(); the 2K0300 board this port runs on has the controller
+  as the master, so the codec is configured as the target.
+
+  The register model follows the ES8328, which is the part Linux drives for the
+  "everest,es8388" compatible as well (sound/soc/codecs/es8328.c and
+  es8328-i2c.c); the driver notes the registers whose meaning differs between
+  the two parts.
+
+compatible: "everest,es8388"
+
+include: [i2c-device.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  mclk-frequency:
+    type: int
+    description: |
+      Frequency of the codec's system clock (MCLK) on this board, in Hz. The
+      driver uses it to check the configuration requests against the sample
+      rate tables it has (12.288 MHz and 11.2896 MHz are the two families the
+      part supports); the 2K0300 board clocks its codec from a fixed 12.288 MHz
+      oscillator.

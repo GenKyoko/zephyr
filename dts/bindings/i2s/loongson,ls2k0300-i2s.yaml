@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 description: |
@@ -11,12 +10,11 @@ description: |
   codec system clock (MCLK) is derived from the controller clock through a
   fractional divider in "IISConfig1".
 
-  Only the polled FIFO path is implemented: this port has no DMA controller
-  driver, so transfers are paced from the system cycle counter instead of being
-  driven by the DMA engine the vendor's Linux driver uses. The interrupt
-  sources of the block are left disabled - the manual defines them as FIFO
-  overflow/underflow notifications, which a polled driver cannot use as a
-  pacing signal.
+  The FIFOs are fed by the LSIA DMA controller: one circular channel per
+  direction over a two block ring, paced by the controller's own data
+  requests, the way the vendor's Linux driver does it. The interrupt sources
+  of the block itself are left disabled - the manual defines them as FIFO
+  overflow/underflow notifications, which cannot be used as a pacing signal.
 
 compatible: "loongson,ls2k0300-i2s"
 
@@ -40,6 +38,59 @@ properties:
 
       The setting has to match the wiring; a configuration request that asks
       for the other role is refused with -EINVAL.
+
+  loongson,bclk-from-reference:
+    type: boolean
+    description: |
+      What the bit clock divider counts. By default it divides the system clock
+      (IISConfig1's fractional divider output), which is what the vendor driver
+      does on the revision it calls 1, and the driver then picks the division so
+      that BCLK comes out as an exact multiple of the frame rate.
+
+      With this property the divider is taken to count the block's reference
+      clock directly instead (the vendor driver's revision 0 model). That
+      division generally cannot hit the frame rate exactly, so the driver uses
+      the rate it really produces and derives the system clock from it, keeping
+      the ratio the codec's rate register describes intact.
+
+      Which one a given SoC revision implements is not documented - the vendor
+      driver decides by the revision it reads from the PCI device, which the
+      2K0300 does not have. Worth trying when the bit clock seems wrong by a
+      fixed factor (a codec fed a bit clock several times too fast is heard as
+      noise, not as audio).
+
+  loongson,mclk-xfs:
+    type: int
+    default: 128
+    description: |
+      The system clock (MCLK) as a multiple of the frame rate - the "xfs" of
+      the vendor driver. Its device trees never set it, so its default of 128
+      is what the working configuration on this SoC programs:
+      MCLK = 128 * frame rate = 6.144 MHz at 48 kHz, with the bit clock
+      divider (BCLK_RATIO) taken as MCLK/(2*BCLK) - 1.
+
+  loongson,dmas:
+    type: phandle-array
+    description: |
+      The DMA controller that moves the data, and the channels its requests are
+      wired to: <&lsia_dma transmit-channel receive-channel>. The requests are fixed in silicon - there is no request
+      select register - so these two numbers are all a board has to get right;
+      on the 2K0300 the I2S transmit request is on channel 1 and the receive
+      request on channel 0, which is the mapping the vendor device tree uses
+      ("dmas = <&dma 0 0xaf>, <&dma 1 0xbf>").
+
+  loongson,data-in-gpios:
+    type: phandle-array
+    description: |
+      The data input pin - the codec's data out - as a GPIO specifier
+      (<&gpioN pin>). It has to be an input: this port's pin state only selects
+      the function, and the pad direction register (GPIO_OEN, active low) is
+      left as the boot loader found it. On this board that leaves all five
+      interface pins as outputs, so without this the pad drives the codec's
+      data line against it and the receive path reads nothing.
+
+      Required: a board that leaves the pad direction to the boot loader has
+      to name the pin here, or the receive path reads nothing.
 
   mclk-output:
     type: boolean

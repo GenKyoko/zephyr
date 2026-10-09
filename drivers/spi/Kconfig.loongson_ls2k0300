@@ -1,0 +1,13 @@
+# Loongson 2K0300 SPI Driver configuration options
+
+# SPDX-License-Identifier: Apache-2.0
+
+config SPI_LOONGSON_LS2K0300
+	bool "Loongson 2K0300 SPI controller driver"
+	default y
+	depends on DT_HAS_LOONGSON_LS_SPI_ENABLED
+	help
+	  Enable the polled SPI master of the Loongson 2K0300 (the
+	  "loongson,ls-spi" blocks at 0x16010000/0x16018000, user manual
+	  chapter 9). The two "loongson,ls-spi-io" blocks (SPI2/SPI3) are a
+	  different register file and are not covered.

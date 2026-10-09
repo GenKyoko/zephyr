@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Loongson 2K0300 (LS2K300 family) early SoC bring-up.
@@ -28,6 +27,7 @@
  * look as if the UART block were gated or held in reset.
  */
 
+#include <loongarch/csr.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/sys_io.h>
@@ -811,3 +811,47 @@ static int ls2k0300_console_guard_init(void)
 
 SYS_INIT(ls2k0300_console_guard_init, APPLICATION, 0);
 #endif /* CONFIG_LS2K0300_CONSOLE_GUARD */
+
+/*
+ * The data cache is deliberately left off.
+ *
+ * This port has no cache maintenance at all - no CACOP sequences, no cache
+ * Kconfig, no sys_cache_data_flush_range() - while the board has DMA engines
+ * that reach memory over the bus without passing through the CPU's cache. The
+ * LSIA controller behind the I2S data path is one of them: with the cache on,
+ * bytes the CPU wrote into a buffer it prepared for a transfer can still be
+ * dirty in cache while the engine reads the memory behind its back, and the
+ * transfer sees stale data (measured: the audio ring read back as all zeroes,
+ * so the DMA moved silence for ever). The same happens in reverse on the
+ * receive side.
+ *
+ * Linux turns the caches off the same way before it brings them up with its own
+ * maintenance (CPUCFG2.DIE / DPE / DPDE, the LoongArch control register 0x302).
+ * Until this port grows cache maintenance, leaving them off is what makes DMA
+ * buffers work, and it costs memory bandwidth only. The value is printed before
+ * and after, so what the hardware actually had enabled is visible on the
+ * console.
+ */
+#define LS2K_CPUCFG2_DIE  (1UL << 21) /* data cache invalidate enable */
+#define LS2K_CPUCFG2_DPE  (1UL << 22) /* data cache prefetch enable */
+#define LS2K_CPUCFG2_DPDE (1UL << 23) /* data cache prefetch enable */
+
+static int ls2k0300_cache_init(void)
+{
+	unsigned long before, after;
+	unsigned long wanted;
+
+	before = loongarch_csr_read(LOONGARCH_CPUCFG2);
+
+	wanted = before & ~(LS2K_CPUCFG2_DIE | LS2K_CPUCFG2_DPE | LS2K_CPUCFG2_DPDE);
+	(void)loongarch_csr_write(wanted, LOONGARCH_CPUCFG2);
+
+	after = loongarch_csr_read(LOONGARCH_CPUCFG2);
+
+	LOG_INF("CPUCFG2 0x%08lx -> 0x%08lx (data cache %s)", before, after,
+		((before & LS2K_CPUCFG2_DIE) != 0UL) ? "was on, now off" : "already off");
+
+	return 0;
+}
+
+SYS_INIT(ls2k0300_cache_init, PRE_KERNEL_1, 0);

@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Loongson EIOINTC (extended I/O interrupt controller), "EXTIOI" in the 2K0300

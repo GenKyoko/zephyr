@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Loongson 2K0300 I2S driver ("IIS", user manual chapter 11).
@@ -27,14 +26,20 @@
  *
  * What this driver is and is not:
  *
- *   - it is polled. The port has no DMA controller driver yet, so instead of
- *     the DMA engine the vendor's Linux driver uses (which feeds the FIFOs in
- *     the background), each 32 bit FIFO word - two frames - is written or read
- *     at its sample instant, paced from the system cycle counter. i2s_write()
- *     therefore blocks for the duration of the buffer rather than queueing it,
- *     and both FIFOs have to be serviced by the same thread: interleave the
- *     two directions, or the 8 byte FIFO of the idle direction overruns.
- *   - it is stereo and I2S format only, like the hardware: the frame always has
+ *   - the data path is driven by the LSIA DMA controller (drivers/dma/
+ *     dma_loongson_lsia.c): each direction runs one circular channel over a
+ *     two block ring, paced by the controller's own data requests, the way
+ *     the vendor's Linux driver feeds the FIFOs. The half and wrap boundaries
+ *     arrive as interrupts that release a ring half to i2s_write() /
+ *     i2s_read(), so a write blocks only until the engine is done with the
+ *     half it refills - not for the whole buffer - and the two directions can
+ *     run from independent threads.
+ *   - its data format is fixed in hardware (there is no format register - the
+ *     vendor driver's set_dai_fmt() writes nothing), so the driver accepts
+ *     whatever format the caller asks for and it is the codec that has to
+ *     match; refusing would not change the wire and would only make the pair
+ *     harder to find. What it does check is that the bit pattern cannot come out
+ *     wrong: it is stereo only, the frame always has
  *     two words, the sample depth is the word size (8..32 bit), and the data
  *     order is MSB first.
  *   - its interrupt sources stay disabled. The manual defines them as
@@ -52,6 +57,8 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/kernel.h>
@@ -65,13 +72,12 @@
 #define IIS_TX_DATA 0x0010U
 
 /*
- * The manual puts config1 at 0xd014, while both the vendor's 2K0300 driver and
- * mainline's Loongson I2S driver write it at 0x14. The driver writes both
- * offsets: the one the hardware does not implement ignores the store, and at
- * least one of them reaches the divider.
+ * The manual puts config1 at 0xd014, but both the vendor's 2K0300 driver and
+ * mainline's Loongson I2S driver write it at 0x14 - and on this silicon the
+ * value demonstrably lands at 0x14 while 0xd014 always reads 0, so the manual's
+ * offset is not implemented. Only 0x14 is written.
  */
-#define IIS_CONFIG1 0xd014U
-#define IIS_CONFIG1_VENDOR 0x0014U
+#define IIS_CONFIG1 0x0014U
 
 #define IIS_CFG_LR_LEN(x)     ((uint32_t)(x) << 24)
 #define IIS_CFG_TX_DEPTH(x)   ((uint32_t)(x) << 16)
@@ -88,14 +94,34 @@
 #define IIS_CTRL_TX_DMA_EN  BIT(7)
 #define IIS_CTRL_RESETN     BIT(4)
 #define IIS_CTRL_MCLK_EN    BIT(3)
-#define IIS_CTRL_RX_INT_EN  BIT(1)
-#define IIS_CTRL_TX_INT_EN  BIT(0)
 
 /* Both FIFOs hold 8 bytes, i.e. two 32 bit words */
 #define IIS_FIFO_WORDS 2U
 
 /* Sample rates that fit the divider of a 4 byte frame */
 #define IIS_MAX_DIVIDER 0xffU
+
+/*
+ * The DMA rings are handed to the engine by the generic driver, which does
+ * the virtual to physical translation itself (the low 32 bits of any of the
+ * port's addresses are the physical one). The rings are ordinary memory and
+ * the CPU touches them directly; that only works because the SoC start-up
+ * leaves the data cache off (see the cache note in the SoC file) - with a
+ * caching CPU the bytes written here could still be dirty in cache while the
+ * engine reads the memory behind its back. Once this port has cache
+ * maintenance, this is where a flush before the transfer and an invalidate
+ * after it belong.
+ */
+static inline void *iis_ring(const void *addr)
+{
+	return (void *)addr;
+}
+
+/* Bytes per half of the DMA ring; the API's block size has to fit in one */
+#define IIS_RING_BLOCK_MAX 1024U
+
+/* One ring is two halves, which is also what the boundary semaphore counts */
+#define IIS_RING_HALVES 2U
 
 struct i2s_loongson_config {
 	mem_addr_t base;
@@ -104,6 +130,21 @@ struct i2s_loongson_config {
 	const struct pinctrl_dev_config *pcfg;
 	bool slave_mode;
 	bool mclk_output;
+	/* The bit clock divider counts the reference clock instead of the system clock */
+	bool bclk_from_reference;
+	/*
+	 * The system clock (MCLK) as a multiple of the frame rate - the "xfs"
+	 * of the vendor driver, which defaults it to 128 and is what its working
+	 * configuration programs on this SoC (its board trees set nothing, so
+	 * 128 it is). 128 * 48 kHz = 6.144 MHz at the codec.
+	 */
+	uint32_t mclk_xfs;
+	/* The codec's data out, which has to be an input pad */
+	struct gpio_dt_spec data_in;
+	/* The DMA controller and the channels the data requests are wired to */
+	const struct device *dma_dev;
+	uint32_t dma_tx_ch;
+	uint32_t dma_rx_ch;
 };
 
 struct i2s_loongson_data {
@@ -112,7 +153,29 @@ struct i2s_loongson_data {
 	struct i2s_config cfg[2]; /* [0] = TX, [1] = RX */
 	enum i2s_state state[2];
 	uint32_t clock_hz;
-	uint32_t cycles_per_word;
+	/*
+	 * The data path is a DMA ring of two blocks per direction: the engine
+	 * moves the words, paced by the controller's own requests, and the CPU
+	 * only waits for room. The rings are ordinary memory; that the CPU can
+	 * hand them to the engine without cache maintenance is the iis_ring()
+	 * note.
+	 */
+	uint8_t tx_ring[2 * IIS_RING_BLOCK_MAX];
+	uint8_t rx_ring[2 * IIS_RING_BLOCK_MAX];
+	uint8_t *tx_ring_unc;
+	uint8_t *rx_ring_unc;
+	/*
+	 * One count per ring half boundary: the engine raises the half flag
+	 * going into the second half and the complete flag on the wrap, and
+	 * either boundary means "one more half dealt with" - which is what a
+	 * write waits for before refilling and a read before handing out. The
+	 * count tops at the ring's two halves, the way the status flags the
+	 * polled driver read were sticky.
+	 */
+	struct k_sem half_done[2];
+	uint32_t block_size; /* bytes per ring half, from the configuration */
+	uint8_t tx_half;     /* the half i2s_write() fills next */
+	uint8_t rx_half;     /* the half i2s_read() hands out next */
 };
 
 static inline int i2s_loongson_dir_idx(enum i2s_dir dir)
@@ -138,11 +201,21 @@ static inline void i2s_loongson_reg_update(const struct i2s_loongson_config *cfg
 }
 
 /*
- * The control bits that describe the link itself, as opposed to the per
- * direction enables: out of soft reset, MSB first, master or slave, and the
- * MCLK output.
+ * Bring the clock tree up in one write, out of soft reset.
+ *
+ * The vendor's PCM probe looks like a staged bring-up (writel(0x8), wait for
+ * MCLK_READY, writel(0x8008), wait for CLK_READY), but on this silicon both
+ * ready bits read 1 even with the clock outputs off - so on the vendor kernel
+ * those waits fall through immediately and the two stores are effectively
+ * back to back. Holding the block in soft reset the way a literal reading of
+ * that sequence suggests (this port did: RESETn stayed 0 from init until the
+ * first trigger) is NOT what the vendor does, and the board punishes it: with
+ * the dividers otherwise programmed exactly like the vendor's, the bit clock,
+ * frame clock and data pads never drive again (the receive DMA keeps counting
+ * on the internal clock, while the codec - which only sees the pads - goes
+ * silent and its ADC flatlines).
  */
-static uint32_t i2s_loongson_control_base(const struct i2s_loongson_config *cfg)
+static void i2s_loongson_clock_start(const struct i2s_loongson_config *cfg)
 {
 	uint32_t val = IIS_CTRL_RESETN | IIS_CTRL_MSB;
 
@@ -154,17 +227,110 @@ static uint32_t i2s_loongson_control_base(const struct i2s_loongson_config *cfg)
 		val |= IIS_CTRL_MCLK_EN;
 	}
 
-	return val;
+	i2s_loongson_reg_write(cfg, IIS_CONTROL, val);
 }
 
-/* Wait until the cycle counter reaches @p due (used to pace the FIFO) */
-static void i2s_loongson_wait_until(uint64_t due)
+/*
+ * The DMA callback of both directions. The engine crosses a ring half
+ * boundary when the half flag stands - it left half 0 - or when it wrapped,
+ * and either boundary is "one more half dealt with", which is exactly what
+ * the producer and the consumer wait for. A transfer error takes the stream
+ * down; the API's PREPARE trigger is how it comes back.
+ */
+static void i2s_loongson_dma_cb(const struct device *dma_dev, void *user_data, uint32_t channel,
+				int status)
 {
-	while ((int64_t)(k_cycle_get_64() - due) < 0) {
-		/* spin: the FIFO only holds two words, so there is nothing else
-		 * to do in this window
-		 */
+	const struct device *dev = user_data;
+	const struct i2s_loongson_config *cfg = dev->config;
+	struct i2s_loongson_data *data = dev->data;
+	int idx = (channel == cfg->dma_tx_ch) ? 0 : 1;
+
+	if (status < 0) {
+		printk("I2S: dma channel %u error %d - stream down\n", channel, status);
+		data->state[idx] = I2S_STATE_ERROR;
+		return;
 	}
+
+	k_sem_give(&data->half_done[idx]);
+}
+
+/*
+ * Point one direction's channel at its ring and set it running: circular,
+ * memory increments, four bytes on both sides (a stereo frame is what one 32
+ * bit word carries, and the vendor's PCM driver programs the same widths),
+ * half and wrap boundaries armed. The count register takes beats, so the
+ * ring length in words.
+ */
+static int iis_dma_setup(const struct device *dev, enum i2s_dir dir, uint8_t *ring)
+{
+	const struct i2s_loongson_config *cfg = dev->config;
+	struct i2s_loongson_data *data = dev->data;
+	bool to_periph = (dir == I2S_DIR_TX);
+	uint32_t ch = to_periph ? cfg->dma_tx_ch : cfg->dma_rx_ch;
+	struct dma_config config = {0};
+	struct dma_block_config block = {0};
+	int ret;
+
+	block.block_size = 2U * data->block_size;
+	if (to_periph) {
+		block.source_address = (uint32_t)(uintptr_t)ring;
+		block.dest_address = (uint32_t)(uintptr_t)(cfg->base + IIS_TX_DATA);
+		block.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+		block.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	} else {
+		block.source_address = (uint32_t)(uintptr_t)(cfg->base + IIS_RX_DATA);
+		block.dest_address = (uint32_t)(uintptr_t)ring;
+		block.source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+		block.dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+	}
+
+	config.channel_direction = to_periph ? MEMORY_TO_PERIPHERAL : PERIPHERAL_TO_MEMORY;
+	config.source_data_size = sizeof(uint32_t);
+	config.dest_data_size = sizeof(uint32_t);
+	config.channel_priority = 2U;
+	config.head_block = &block;
+	config.block_count = 1U;
+	config.cyclic = true;
+	config.half_complete_callback_en = 1U;
+	config.dma_callback = i2s_loongson_dma_cb;
+	config.user_data = (void *)dev;
+
+	ret = dma_config(cfg->dma_dev, ch, &config);
+	if (ret != 0) {
+		return ret;
+	}
+
+	return dma_start(cfg->dma_dev, ch);
+}
+
+/*
+ * Wait until the engine has crossed the next ring half boundary. The API's
+ * negative timeout means "wait forever", and so does zero in this port - the
+ * reading the polled driver gave it, kept so behaviour does not shift; a
+ * positive value bounds the wait. What the engine was doing matters when the
+ * wait fails: a channel that is not counting down never saw a request, and
+ * one that is part way through is running late. Both look like this from
+ * here, and the difference decides where to look.
+ */
+static int iis_dma_wait_half(const struct i2s_loongson_config *cfg, struct i2s_loongson_data *data,
+			     int idx, int32_t timeout)
+{
+	k_timeout_t wait = (timeout <= 0) ? K_FOREVER : K_MSEC((uint32_t)timeout);
+	uint32_t ch = (idx == 0) ? cfg->dma_tx_ch : cfg->dma_rx_ch;
+	struct dma_status stat;
+	int ret;
+
+	ret = k_sem_take(&data->half_done[idx], wait);
+	if (ret != 0) {
+		stat.pending_length = 0U;
+		stat.busy = false;
+		(void)dma_get_status(cfg->dma_dev, ch, &stat);
+		printk("I2S: dma channel %u did not cross a ring boundary in %d ms "
+		       "(pending %u bytes, %s)\n",
+		       ch, timeout, stat.pending_length, stat.busy ? "busy" : "idle");
+	}
+
+	return ret;
 }
 
 static int i2s_loongson_configure(const struct device *dev, enum i2s_dir dir,
@@ -173,7 +339,9 @@ static int i2s_loongson_configure(const struct device *dev, enum i2s_dir dir,
 	const struct i2s_loongson_config *dcfg = dev->config;
 	struct i2s_loongson_data *data = dev->data;
 	uint32_t word = cfg->word_size;
-	uint32_t bclk_ratio, mclk_hz, mclk_int, mclk_frac, val;
+	uint32_t fmt;
+	uint32_t frame_clk_hz;
+	uint32_t bclk_ratio, mclk_hz, mclk_int, mclk_frac, divider, val;
 	bool master;
 	int idx;
 
@@ -195,12 +363,22 @@ static int i2s_loongson_configure(const struct device *dev, enum i2s_dir dir,
 	}
 
 	/*
-	 * The hardware is stereo only and always in I2S format: two words per
-	 * frame, MSB first. Everything else is refused here rather than
-	 * producing a wrong bit pattern on the wire.
+	 * The hardware is stereo only: two words per frame, MSB first. What is
+	 * refused here is what would put a wrong bit pattern on the wire.
+	 *
+	 * The data format (I2S against left or right justified) is deliberately
+	 * not checked: this block has no format register - the vendor driver's
+	 * set_dai_fmt() writes nothing - so its wire format is fixed in silicon
+	 * and the codec has to be told the matching one. Accepting the format the
+	 * caller passes lets a codec be configured to either and the pair be
+	 * found by listening.
 	 */
+	fmt = cfg->format & I2S_FMT_DATA_FORMAT_MASK;
+
 	if ((cfg->channels != 2U) || (word < 8U) || (word > 32U) ||
-	    ((cfg->format & I2S_FMT_DATA_FORMAT_MASK) != I2S_FMT_DATA_FORMAT_I2S) ||
+	    ((fmt != I2S_FMT_DATA_FORMAT_I2S) &&
+	     (fmt != I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED) &&
+	     (fmt != I2S_FMT_DATA_FORMAT_RIGHT_JUSTIFIED)) ||
 	    ((cfg->format & I2S_FMT_DATA_ORDER_LSB) != 0U) ||
 	    ((cfg->format & I2S_FMT_CLK_FORMAT_MASK) != I2S_FMT_CLK_NF_NB) ||
 	    ((cfg->options & I2S_OPT_LOOPBACK) != 0U)) {
@@ -241,17 +419,63 @@ static int i2s_loongson_configure(const struct device *dev, enum i2s_dir dir,
 	}
 
 	/*
-	 * Pick the smallest bit clock divisor whose MCLK is at least 256 times
-	 * the sample rate, keeping BCLK = MCLK / (2 * (ratio + 1)) exact:
+	 * Pick the bit clock division, and the system clock that goes with it.
 	 *
-	 *   MCLK = 4 * (ratio + 1) * word * frame_clk_freq
+	 * The default is the vendor's revision-1 clocking, the one its working
+	 * driver programs on this SoC: the system clock is "xfs" times the frame
+	 * rate (xfs = 128, the value its device trees never override), and the
+	 * BCLK_RATIO field divides that system clock by 2*(ratio+1):
+	 *
+	 *   MCLK = xfs * frame rate            128 * 48 kHz = 6.144 MHz
+	 *   BCLK = word * 2 * frame rate       1.536 MHz at 16 bit
+	 *   BCLK_RATIO = MCLK/(2*BCLK) - 1     = 1
+	 *
+	 * (Earlier this port picked the smallest ratio whose MCLK reached
+	 * 256 times the frame rate - 12.288 MHz and ratio 3, both self consistent
+	 * but never what the working reference programs. Reproducing the vendor's
+	 * numbers bit for bit is the point now.)
+	 *
+	 * Two models exist for what BCLK_RATIO divides, and the vendor driver
+	 * uses a different one depending on the IP revision it detects: the
+	 * system clock (its revision 1, this default), or straight from the
+	 * block's reference clock (its revision 0, see "loongson,bclk-from-
+	 * reference"), which cannot hit the frame rate exactly - in that second
+	 * case the rate the divider really produces is taken, and the system
+	 * clock is derived from it as 256 times the frame rate so that the ratio
+	 * the codec's rate register describes still holds.
 	 */
-	bclk_ratio = DIV_ROUND_UP(64U, word) - 1U;
-	if (bclk_ratio > IIS_MAX_DIVIDER) {
-		return -EINVAL;
-	}
+	if (dcfg->bclk_from_reference) {
+		uint64_t ratio = DIV_ROUND_CLOSEST((uint64_t)data->clock_hz,
+						   2ULL * 2ULL * word * cfg->frame_clk_freq);
+		uint64_t lrclk;
 
-	mclk_hz = 4U * (bclk_ratio + 1U) * word * cfg->frame_clk_freq;
+		bclk_ratio = (ratio > 0U) ? (uint32_t)(ratio - 1U) : 0U;
+		if (bclk_ratio > IIS_MAX_DIVIDER) {
+			return -EINVAL;
+		}
+
+		lrclk = (uint64_t)data->clock_hz /
+			(4ULL * (bclk_ratio + 1U) * word);
+		mclk_hz = (uint32_t)(256ULL * lrclk);
+
+		/* The wire runs at that rate, not at the one that was asked for */
+		frame_clk_hz = (uint32_t)lrclk;
+	} else {
+		uint32_t bclk_hz = 2U * word * cfg->frame_clk_freq;
+
+		mclk_hz = dcfg->mclk_xfs * cfg->frame_clk_freq;
+		if (mclk_hz < 2U * bclk_hz) {
+			return -EINVAL;
+		}
+
+		/* The vendor's DIV_ROUND_CLOSEST, which lands on 1 at 48 kHz */
+		bclk_ratio = DIV_ROUND_CLOSEST(mclk_hz, 2U * bclk_hz) - 1U;
+		if (bclk_ratio > IIS_MAX_DIVIDER) {
+			return -EINVAL;
+		}
+
+		frame_clk_hz = cfg->frame_clk_freq;
+	}
 
 	/* MCLK = controller clock / (integer + fraction / 2^16) */
 	mclk_int = data->clock_hz / mclk_hz;
@@ -267,23 +491,48 @@ static int i2s_loongson_configure(const struct device *dev, enum i2s_dir dir,
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	i2s_loongson_reg_write(dcfg, IIS_CONFIG, val);
-	i2s_loongson_reg_write(dcfg, IIS_CONFIG1, (mclk_frac << 16) | mclk_int);
-	i2s_loongson_reg_write(dcfg, IIS_CONFIG1_VENDOR, (mclk_frac << 16) | mclk_int);
+	divider = (mclk_frac << 16) | mclk_int;
 
 	/*
-	 * Program the link itself and make sure neither the DMA enables (the
-	 * FIFOs are fed by the CPU here) nor the interrupt sources are set.
+	 * Only the two format registers go here; the control register keeps the
+	 * state the vendor's probe left it in (clock tree up, serial side in
+	 * soft reset) until a stream is triggered. The vendor writes exactly
+	 * these two registers in its hw_params as well - at 0x14, which is where
+	 * the divider of this silicon demonstrably lands (the manual's 0xd014
+	 * is not implemented and always reads 0).
 	 */
-	i2s_loongson_reg_update(dcfg, IIS_CONTROL,
-			    IIS_CTRL_MASTER | IIS_CTRL_MSB | IIS_CTRL_RESETN | IIS_CTRL_MCLK_EN |
-				    IIS_CTRL_TX_DMA_EN | IIS_CTRL_RX_DMA_EN |
-				    IIS_CTRL_TX_INT_EN | IIS_CTRL_RX_INT_EN,
-			    i2s_loongson_control_base(dcfg));
+	i2s_loongson_reg_write(dcfg, IIS_CONFIG, val);
+	i2s_loongson_reg_write(dcfg, IIS_CONFIG1, divider);
+
+	printk("I2S: reference %u Hz -> MCLK %u Hz (divider %u + %u/65536), BCLK %u Hz "
+	       "(%s model), frames %u Hz\n",
+	       data->clock_hz, mclk_hz, mclk_int, mclk_frac,
+	       dcfg->bclk_from_reference
+		       ? data->clock_hz / (2U * (bclk_ratio + 1U))
+		       : mclk_hz / (2U * (bclk_ratio + 1U)),
+	       dcfg->bclk_from_reference ? "reference" : "system clock", frame_clk_hz);
+
+	if ((cfg->block_size == 0U) || ((cfg->block_size % sizeof(uint32_t)) != 0U) ||
+	    (cfg->block_size > IIS_RING_BLOCK_MAX)) {
+		k_mutex_unlock(&data->lock);
+		return -EINVAL;
+	}
+
+	data->block_size = cfg->block_size;
+
+	/*
+	 * Say when the divider did not take: without it the bit clock comes out
+	 * of an unprogrammed (much faster) system clock, which is heard as noise
+	 * instead of audio.
+	 */
+	if (i2s_loongson_reg_read(dcfg, IIS_CONFIG1) != divider) {
+		printk("I2S: system clock divider did not stick - wrote %08x to 0x%04x, "
+		       "read %08x\n",
+		       divider, (uint32_t)IIS_CONFIG1,
+		       i2s_loongson_reg_read(dcfg, IIS_CONFIG1));
+	}
 
 	data->cfg[idx] = *cfg;
-	data->cycles_per_word = (uint32_t)((2ULL * sys_clock_hw_cycles_per_sec()) /
-					   cfg->frame_clk_freq);
 	data->state[idx] = I2S_STATE_READY;
 
 	k_mutex_unlock(&data->lock);
@@ -308,36 +557,37 @@ static const struct i2s_config *i2s_loongson_config_get(const struct device *dev
 
 static int i2s_loongson_write(const struct device *dev, void *mem_block, size_t size)
 {
-	const struct i2s_loongson_config *cfg = dev->config;
 	struct i2s_loongson_data *data = dev->data;
-	const uint32_t *words = mem_block;
-	size_t count = size / sizeof(uint32_t);
-	uint64_t due = k_cycle_get_64();
-	int ret = 0;
+	uint32_t half = data->tx_half;
+	int32_t timeout_ms;
+	int ret;
 
 	if ((data->state[0] != I2S_STATE_RUNNING)) {
 		return -EIO;
 	}
 
-	if ((size == 0U) || ((size % sizeof(uint32_t)) != 0U)) {
+	if ((size == 0U) || (size > data->block_size) || ((size % sizeof(uint32_t)) != 0U)) {
 		return -EINVAL;
 	}
+
+	timeout_ms = data->cfg[0].timeout;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/*
-	 * Feed the FIFO one 32 bit word (two frames) per sample period. The
-	 * pacing starts at "now": the caller is expected to interleave this
-	 * with i2s_read() of the other direction, which keeps both FIFOs at
-	 * one or two words.
+	 * The engine moves the data, paced by the controller's own requests, so
+	 * nothing here has to reproduce the sample rate: what the caller waits
+	 * for is room in the ring, i.e. the previous half having been played.
+	 * That is the blocking the CPU-fed FIFO path could not offer - it wrote
+	 * into a two word FIFO on a schedule of its own.
 	 */
-	for (size_t i = 0U; i < count; i++) {
-		if (i > 0U) {
-			due += data->cycles_per_word;
-			i2s_loongson_wait_until(due);
-		}
+	ret = iis_dma_wait_half(dev->config, data, 0, timeout_ms);
+	if (ret == 0) {
+		uint8_t *dst = data->tx_ring_unc + (half * data->block_size);
 
-		i2s_loongson_reg_write(cfg, IIS_TX_DATA, words[i]);
+		memcpy(dst, mem_block, size);
+		memset(&dst[size], 0, data->block_size - size);
+		data->tx_half = half ^ 1U;
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -349,47 +599,49 @@ static int i2s_loongson_read(const struct device *dev, void **mem_block, size_t 
 {
 	const struct i2s_loongson_config *cfg = dev->config;
 	struct i2s_loongson_data *data = dev->data;
-	uint32_t *words;
-	size_t count;
-	uint64_t due;
+	uint32_t half = data->rx_half;
+	int32_t timeout_ms;
 	k_timeout_t timeout;
+	void *words;
 	int ret;
 
 	if (data->state[1] != I2S_STATE_RUNNING) {
 		return -EIO;
 	}
 
+	timeout_ms = data->cfg[1].timeout;
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* Room on the other side: the engine has filled the half we hand out */
+	ret = iis_dma_wait_half(cfg, data, 1, timeout_ms);
+
+	k_mutex_unlock(&data->lock);
+
+	if (ret != 0) {
+		return ret;
+	}
+
 	/* The API gives the read timeout in milliseconds; the slab takes a
 	 * k_timeout_t, and a negative value means "wait forever".
 	 */
-	timeout = (data->cfg[1].timeout == 0)     ? K_NO_WAIT
-		  : (data->cfg[1].timeout < 0)    ? K_FOREVER
-						  : K_MSEC(data->cfg[1].timeout);
+	timeout = (data->cfg[1].timeout == 0)  ? K_NO_WAIT
+		  : (data->cfg[1].timeout < 0) ? K_FOREVER
+						: K_MSEC(data->cfg[1].timeout);
 
-	ret = k_mem_slab_alloc(data->cfg[1].mem_slab, (void **)&words, timeout);
+	ret = k_mem_slab_alloc(data->cfg[1].mem_slab, &words, timeout);
 	if (ret != 0) {
 		return -EAGAIN;
 	}
 
-	count = data->cfg[1].block_size / sizeof(uint32_t);
-	due = k_cycle_get_64();
+	memcpy(words, data->rx_ring_unc + (half * data->block_size), data->block_size);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-
-	/* Same pacing as the transmit path, but the other way around */
-	for (size_t i = 0U; i < count; i++) {
-		if (i > 0U) {
-			due += data->cycles_per_word;
-			i2s_loongson_wait_until(due);
-		}
-
-		words[i] = i2s_loongson_reg_read(cfg, IIS_RX_DATA);
-	}
-
+	data->rx_half = half ^ 1U;
 	k_mutex_unlock(&data->lock);
 
 	*mem_block = words;
-	*size = data->cfg[1].block_size;
+	*size = data->block_size;
 
 	return 0;
 }
@@ -399,14 +651,26 @@ static int i2s_loongson_trigger(const struct device *dev, enum i2s_dir dir,
 {
 	const struct i2s_loongson_config *cfg = dev->config;
 	struct i2s_loongson_data *data = dev->data;
-	uint32_t enable;
+	uint32_t dir_en, link;
 	int ret = 0;
 
 	if ((dir != I2S_DIR_TX) && (dir != I2S_DIR_RX)) {
 		return -EINVAL;
 	}
 
-	enable = (dir == I2S_DIR_TX) ? IIS_CTRL_TX_EN : IIS_CTRL_RX_EN;
+	/*
+	 * The vendor trigger brings a stream up as one read-modify-write of
+	 * 0xc010 | the direction's two bits - the link bits (soft reset off,
+	 * MSB first, master) and the direction enable together with the
+	 * direction's DMA enable, which is what lets the controller's data
+	 * requests out to the engine. STOP only clears the direction bits and
+	 * leaves the link up, the way the vendor does; the clock tree itself
+	 * came up in i2s_loongson_init() and is never touched here.
+	 */
+	dir_en = (dir == I2S_DIR_TX) ? (IIS_CTRL_TX_EN | IIS_CTRL_TX_DMA_EN)
+				     : (IIS_CTRL_RX_EN | IIS_CTRL_RX_DMA_EN);
+	link = IIS_CTRL_RESETN | IIS_CTRL_MSB |
+	       (cfg->slave_mode ? 0U : IIS_CTRL_MASTER);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
@@ -417,7 +681,29 @@ static int i2s_loongson_trigger(const struct device *dev, enum i2s_dir dir,
 			break;
 		}
 
-		i2s_loongson_reg_update(cfg, IIS_CONTROL, enable, enable);
+		/*
+		 * Both halves start out as silence, so the engine has valid data
+		 * to move before the first block arrives, and then it runs on its
+		 * own requests until stopped. The boundary count starts empty:
+		 * flags left over from an earlier run would be taken for
+		 * progress.
+		 */
+		if (dir == I2S_DIR_TX) {
+			memset(data->tx_ring_unc, 0, 2U * data->block_size);
+			data->tx_half = 0U;
+			k_sem_init(&data->half_done[0], 0, IIS_RING_HALVES);
+			ret = iis_dma_setup(dev, I2S_DIR_TX, data->tx_ring_unc);
+		} else {
+			memset(data->rx_ring_unc, 0, 2U * data->block_size);
+			data->rx_half = 0U;
+			k_sem_init(&data->half_done[1], 0, IIS_RING_HALVES);
+			ret = iis_dma_setup(dev, I2S_DIR_RX, data->rx_ring_unc);
+		}
+		if (ret != 0) {
+			break;
+		}
+
+		i2s_loongson_reg_update(cfg, IIS_CONTROL, dir_en | link, dir_en | link);
 		data->state[i2s_loongson_dir_idx(dir)] = I2S_STATE_RUNNING;
 		break;
 
@@ -427,7 +713,8 @@ static int i2s_loongson_trigger(const struct device *dev, enum i2s_dir dir,
 			break;
 		}
 
-		i2s_loongson_reg_update(cfg, IIS_CONTROL, enable, 0U);
+		dma_stop(cfg->dma_dev, (dir == I2S_DIR_TX) ? cfg->dma_tx_ch : cfg->dma_rx_ch);
+		i2s_loongson_reg_update(cfg, IIS_CONTROL, dir_en, 0U);
 		data->state[i2s_loongson_dir_idx(dir)] = I2S_STATE_READY;
 		break;
 
@@ -438,23 +725,26 @@ static int i2s_loongson_trigger(const struct device *dev, enum i2s_dir dir,
 		}
 
 		/*
-		 * Nothing is queued in software: i2s_write() has already pushed
-		 * its data into the FIFO, so draining means waiting for the two
-		 * words that are in there to be shifted out.
+		 * Up to two halves can be queued, so draining means letting the
+		 * engine come round once more; the wait is bounded by the
+		 * configured timeout and does not fail the drain if it expires.
 		 */
 		if (dir == I2S_DIR_TX) {
-			uint64_t due = k_cycle_get_64() +
-				       (3ULL * data->cycles_per_word);
+			int32_t timeout_ms =
+				(data->cfg[0].timeout < 0) ? 1000 : data->cfg[0].timeout;
 
-			i2s_loongson_wait_until(due);
+			(void)iis_dma_wait_half(cfg, data, 0, timeout_ms);
 		}
 
-		i2s_loongson_reg_update(cfg, IIS_CONTROL, enable, 0U);
+		dma_stop(cfg->dma_dev, (dir == I2S_DIR_TX) ? cfg->dma_tx_ch : cfg->dma_rx_ch);
+		i2s_loongson_reg_update(cfg, IIS_CONTROL, dir_en, 0U);
 		data->state[i2s_loongson_dir_idx(dir)] = I2S_STATE_READY;
 		break;
 
 	case I2S_TRIGGER_DROP:
-		i2s_loongson_reg_update(cfg, IIS_CONTROL, enable, 0U);
+		dma_stop(cfg->dma_dev, cfg->dma_tx_ch);
+		dma_stop(cfg->dma_dev, cfg->dma_rx_ch);
+		i2s_loongson_reg_update(cfg, IIS_CONTROL, dir_en, 0U);
 
 		/* The soft reset is the only way to empty a FIFO */
 		i2s_loongson_reg_update(cfg, IIS_CONTROL, IIS_CTRL_RESETN, 0U);
@@ -517,16 +807,37 @@ static int i2s_loongson_init(const struct device *dev)
 	}
 
 	/*
-	 * Put the controller into a known state: both directions disabled, no
-	 * DMA, no interrupts, out of soft reset with MSB first. The reset pulse
-	 * empties whatever the previous stage left in the FIFOs.
+	 * The data input - the codec's data out - is an input to this
+	 * controller, and the pin state above only chose its function. The pad
+	 * direction is a separate register (GPIO_OEN, active low) that the boot
+	 * loader leaves alone, so on this board every one of the five interface
+	 * pins comes up as an output. Left that way the pad drives the codec's
+	 * data line against it and the receive path reads nothing.
 	 */
-	i2s_loongson_reg_update(cfg, IIS_CONTROL,
-			    IIS_CTRL_MASTER | IIS_CTRL_MSB | IIS_CTRL_RESETN | IIS_CTRL_MCLK_EN |
-				    IIS_CTRL_TX_EN | IIS_CTRL_RX_EN | IIS_CTRL_TX_DMA_EN |
-				    IIS_CTRL_RX_DMA_EN | IIS_CTRL_TX_INT_EN | IIS_CTRL_RX_INT_EN,
-			    0U);
-	i2s_loongson_reg_update(cfg, IIS_CONTROL, IIS_CTRL_RESETN, IIS_CTRL_RESETN);
+	if (cfg->data_in.port != NULL) {
+		ret = gpio_pin_configure(cfg->data_in.port, cfg->data_in.pin, GPIO_INPUT);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	/*
+	 * Bring the clock tree up in one write, out of soft reset (see
+	 * i2s_loongson_clock_start for why the literal vendor probe sequence
+	 * must not be reproduced here). The direction enables still only go on
+	 * when a stream is triggered, the way the vendor trigger does it.
+	 */
+	i2s_loongson_clock_start(cfg);
+
+	/*
+	 * The rings are ordinary memory handed to the engine through the DMA
+	 * driver, which does the address translation (see iis_ring() for the
+	 * cache part of the story).
+	 */
+	data->tx_ring_unc = iis_ring(data->tx_ring);
+	data->rx_ring_unc = iis_ring(data->rx_ring);
+	k_sem_init(&data->half_done[0], 0, IIS_RING_HALVES);
+	k_sem_init(&data->half_done[1], 0, IIS_RING_HALVES);
 
 	data->state[0] = I2S_STATE_NOT_READY;
 	data->state[1] = I2S_STATE_NOT_READY;
@@ -540,17 +851,26 @@ static int i2s_loongson_init(const struct device *dev)
 	static struct i2s_loongson_data i2s_loongson_data_##n;				\
 											\
 	static const struct i2s_loongson_config i2s_loongson_cfg_##n = {		\
-		.base = DT_INST_REG_ADDR(n),						\
-		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),			\
-		.clock_subsys =								\
-			(clock_control_subsys_t)DT_INST_PHA(n, clocks, clkid),		\
-		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),				\
-		.slave_mode = DT_INST_PROP(n, slave_mode),				\
-		.mclk_output = DT_INST_PROP(n, mclk_output),				\
+		.base = DT_INST_REG_ADDR(n),	\
+		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),	\
+		.clock_subsys = (clock_control_subsys_t)DT_INST_PHA(n, clocks, clkid),	\
+		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),	\
+		.slave_mode = DT_INST_PROP(n, slave_mode),	\
+		.mclk_output = DT_INST_PROP(n, mclk_output),	\
+		.bclk_from_reference = DT_INST_PROP_OR(n, loongson_bclk_from_reference, 0),	\
+		.mclk_xfs = DT_INST_PROP_OR(n, loongson_mclk_xfs, 128),				\
+		.data_in = {								\
+			.port = DEVICE_DT_GET(DT_INST_PHANDLE(n, loongson_data_in_gpios)),	\
+			.pin = DT_INST_PHA_BY_IDX(n, loongson_data_in_gpios, 0, pin),			\
+			.dt_flags = DT_INST_PHA_BY_IDX(n, loongson_data_in_gpios, 0, flags),	\
+		},									\
+		.dma_dev = DEVICE_DT_GET(DT_INST_PHANDLE(n, loongson_dmas)),	\
+		.dma_tx_ch = DT_INST_PHA(n, loongson_dmas, tx_channel),	\
+		.dma_rx_ch = DT_INST_PHA(n, loongson_dmas, rx_channel),	\
 	};										\
 											\
 	DEVICE_DT_INST_DEFINE(n, i2s_loongson_init, NULL, &i2s_loongson_data_##n,	\
-			      &i2s_loongson_cfg_##n, POST_KERNEL,			\
+			      &i2s_loongson_cfg_##n, POST_KERNEL,					\
 			      CONFIG_I2S_INIT_PRIORITY, &i2s_loongson_api);
 
 DT_INST_FOREACH_STATUS_OKAY(I2S_LOONGSON_INIT)

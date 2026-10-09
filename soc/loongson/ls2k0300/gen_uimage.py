@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Create a u-boot legacy uImage from a built Zephyr image.

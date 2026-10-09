@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Loongson 2K0300 SPI master controller ("ls-spi", user manual chapter 9).
+
+  The block is a simple polled SPI master: one byte-wide TX/RX FIFO port, a
+  clock divider built from two two bit fields (SPCR.spr / SPER.spre, the
+  divisions of table 9-7: 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
+  4096) and up to four hardware chip selects driven through the SFC_SOFTCS
+  register (low nibble: which csn lines software controls, high nibble: the
+  line values).
+
+  Register file layout:
+
+    0x00 SPCR      control: spie(7) spe(6) mstr(4) cpol(3) cpha(2) spr(1:0)
+    0x01 SPSR      status: spif(7,w1c) wcol(6,w1c) wffull(3) wfempty(2)
+                   rffull(1) rfempty(0)
+    0x02 FIFO      TX port on write, RX port on read
+    0x03 SPER      external: icnt(7:6) mode(2) spre(1:0)
+    0x04 SFC_PARAM parameter: bit 0 memory_en (reset 1 - it has to be cleared
+                   before the chip select lines answer to SFC_SOFTCS)
+    0x05 SFC_SOFTCS  chip select: csen(3:0) csn(7:4)
+    0x06 SFC_TIMING  flash timing, left at its reset value
+
+  On the 2K0300 the controller input is the APB/DEVS bus clock, 200 MHz on
+  this board, so the divider covers SCLK from 100 MHz down to about 49 kHz.
+
+  The same register file as "loongson,ls2k1000-spi" in mainline Linux
+  (drivers/spi/spi-loongson-core.c), whose platform driver matches that one
+  compatible; the 2K0300 vendor device tree names it "loongson,ls-spi" and
+  this binding follows the vendor name so the device trees stay sharable.
+
+  Not covered here: the two "loongson,ls-spi-io" blocks (SPI2/SPI3) whose
+  register file additionally exposes the flash memory window in QSPI mode,
+  and the memory-mapped (XIP) flash mode of SPI0 - the driver runs the
+  controller as a plain SPI master.
+
+compatible: "loongson,ls-spi"
+
+include: [spi-controller.yaml, base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clocks:
+    required: true
+
+  clock-names:
+    required: false

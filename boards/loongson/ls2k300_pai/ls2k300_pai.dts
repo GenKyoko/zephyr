@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Loongson 2K0300 PAI ("LS2K300-PAI") development board.
@@ -72,7 +71,12 @@
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &ram0;
-		zephyr,display = &ssd1306;
+		/*
+		 * The ST7735S TFT on SPI2 is the active display; switch this
+		 * back to &ssd1306 to give the I2C1 OLED the LVGL/display
+		 * samples again (both drivers stay enabled).
+		 */
+		zephyr,display = &lcd0;
 	};
 
 	ram0: memory@9000000003000000 {
@@ -138,6 +142,13 @@
 	ssd1306: ssd1306@3c {
 		compatible = "solomon,ssd1306";
 		reg = <0x3c>;
+		/*
+		 * Disabled while the ST7735S TFT is the active display (the
+		 * OLED is unplugged; an enabled node would just log init
+		 * failures at every boot). Set "okay" again - and point
+		 * zephyr,display back at &ssd1306 - to use the OLED.
+		 */
+		status = "disabled";
 
 		width = <128>;
 		height = <64>;
@@ -210,6 +221,35 @@
 };
 
 /*
+ * SPI0, the four interface pins G56 (clock), G57 (miso), G58 (mosi) and
+ * G59 (chip select) - the group u-boot has already muxed to the SPI
+ * function, so the board only names it. Bring-up is through the shell
+ * (CONFIG_SPI_SHELL in the bring-up config).
+ */
+&spi0 {
+	status = "okay";
+	pinctrl-0 = <&spi0_g56_default &spi0_g57_default &spi0_g58_default
+		     &spi0_g59_default>;
+	pinctrl-names = "default";
+
+	/*
+	 * Bring-up probe: the SPI shell addresses DT devices, so the bus
+	 * carries one placeholder at chip select 0 for the loopback test.
+	 * Jumper MOSI (G58) to MISO (G57) and
+	 *
+	 *   spi transceive probe 0xaa
+	 *
+	 * reads back the byte it sent. Replace this node with the real
+	 * peripheral once one is wired to the bus.
+	 */
+	probe: spi-probe@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+};
+
+/*
  * I2S controller, with the four interface pins it needs (bit clock, frame
  * clock, data in, data out). The MCLK pin (GPIO76) is left alone: this board
  * clocks its ES8388 codec from a fixed 12.288 MHz oscillator, so driving the
@@ -222,7 +262,114 @@
  */
 &i2s0 {
 	status = "okay";
-	pinctrl-0 = <&i2s_bclk_g77_default &i2s_lr_g78_default &i2s_di_g79_default
-		     &i2s_do_g80_default>;
+	/*
+	 * The MCLK pin is part of the group: the codec takes its system clock
+	 * from this controller, which is what the vendor kernel does by default
+	 * (its driver only leaves MCLK alone when a board sets "mclk-external",
+	 * and none of its board trees does - the fixed clock in their codec node
+	 * is a placeholder their own comment calls unused in slave mode). The
+	 * driver programs the fractional divider to 256 * frame rate, i.e.
+	 * 12.288 MHz at 48 kHz, which is also the rate the codec node declares.
+	 *
+	 * A board that clocks its codec from its own oscillator instead must
+	 * drop "mclk-output" and the MCLK pin from this group, or two drivers
+	 * end up on that net.
+	 */
+	pinctrl-0 = <&i2s_mclk_g76_default &i2s_bclk_g77_default &i2s_lr_g78_default
+		     &i2s_di_g79_default &i2s_do_g80_default>;
 	pinctrl-names = "default";
+	mclk-output;
+
+	/*
+	 * The codec's data out (G79, "datai" here) is an input to this
+	 * controller, and the pin state only picks the function - it leaves the
+	 * pad direction as the boot loader left it, which is an output on every
+	 * one of these five pins. Left alone, the pad would drive the codec's
+	 * data line against it; the driver switches this one to an input.
+	 */
+	loongson,data-in-gpios = <&gpio2 15 0>;
+};
+
+/*
+ * ES8388 audio codec on i2c2 (SCL on GPIO52, SDA on GPIO53), address 0x11 -
+ * the wiring the vendor device tree describes as "codec: es8388@11".
+ *
+ * Its system clock comes from a 12.288 MHz oscillator on the board rather than
+ * from the I2S controller, and it is the target of the I2S clocks: the SoC
+ * drives BCLK and LRCLK, exactly as the vendor machine driver configures the
+ * link (SND_SOC_DAIFMT_CBS_CFS).
+ *
+ * Two labels: "es8388" for code that wants this part, "audio_codec" because
+ * that is what the upstream samples look for.
+ */
+&i2c2 {
+	status = "okay";
+
+	es8388: audio_codec: es8388@11 {
+		compatible = "everest,es8388";
+		reg = <0x11>;
+		mclk-frequency = <12288000>;
+	};
+};
+
+/*
+ * ST7735S TFT on SPI2: G64 = SCK, G66 = MOSI (G65/MISO unused by the panel),
+ * CS = G67 as a GPIO (the ls-spi-io block has no chip select of its own),
+ * DC = G68 and RES = G69 as plain GPIOs.
+ *
+ * The panel parameters follow the ST7735S values the Sipeed longan_nano board
+ * ships (the same controller), with the 160x128 geometry of the common
+ * module: x-offset 2, y-offset 1, landscape MADCTL (MV|RGB), display
+ * inversion on. If the picture is shifted, rotated or the colors swap, the
+ * knobs to try first are x-offset/y-offset, madctl, inversion-on and
+ * rgb-is-inverted - ST7735S modules differ by tab color in exactly those.
+ *
+ * mipi-max-frequency is left at 4 MHz for jumper wires; a properly routed
+ * board runs this panel at 20 MHz and more.
+ */
+&spi2 {
+	status = "okay";
+	pinctrl-0 = <&spi2_g64_default &spi2_g65_default &spi2_g66_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio2 3 GPIO_ACTIVE_LOW>;	/* G67 */
+};
+
+/ {
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio2 4 GPIO_ACTIVE_HIGH>;	/* G68 */
+		reset-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;	/* G69 */
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		lcd0: lcd@0 {
+			compatible = "sitronix,st7735r";
+			reg = <0>;
+			width = <160>;
+			height = <128>;
+			x-offset = <2>;
+			y-offset = <1>;
+			madctl = <0x60>;
+			colmod = <0x05>;
+			inversion-on;
+			rgb-is-inverted;
+			invctr = <3>;
+			pwctr1 = [62 02 04];
+			pwctr2 = [c0];
+			pwctr3 = [0d 00];
+			pwctr4 = [8d 6a];
+			pwctr5 = [8d ee];
+			frmctr1 = [05 3a 3a];
+			frmctr2 = [05 3a 3a];
+			frmctr3 = [05 3a 3a 05 3a 3a];
+			vmctr1 = <0x14>;
+			gamctrp1 = [10 0e 02 03 0e 07 02 07 0a 12 27 37 00 0d 0e 10];
+			gamctrn1 = [10 0e 03 03 0f 06 02 08 0a 13 26 36 00 0d 0e 10];
+
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			mipi-max-frequency = <4000000>;
+		};
+	};
 };

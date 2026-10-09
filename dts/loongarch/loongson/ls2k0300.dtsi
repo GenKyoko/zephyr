@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Loongson 2K0300 (LS2K0300, "ls2k300" family) - single LA264 core.
@@ -277,6 +276,66 @@
 			i2s_do_g80_default: i2s_do_g80_default {
 				pinmux = <80 3>;
 			};
+
+			/*
+			 * SPI0/SPI1 pins, all on their main function - the
+			 * vendor device tree's "spi0_pins"/"spi1_pins" groups
+			 * decoded to the port's (pin, function) form:
+			 *
+			 *   SPI0 G56 GCLK / G57 MISO / G58 MOSI / G59 CS
+			 *   SPI1 G60 GCLK / G61 MISO / G62 MOSI / G63 CS
+			 */
+			spi0_g56_default: spi0_g56_default {
+				pinmux = <56 3>;
+			};
+
+			spi0_g57_default: spi0_g57_default {
+				pinmux = <57 3>;
+			};
+
+			spi0_g58_default: spi0_g58_default {
+				pinmux = <58 3>;
+			};
+
+			spi0_g59_default: spi0_g59_default {
+				pinmux = <59 3>;
+			};
+
+			spi1_g60_default: spi1_g60_default {
+				pinmux = <60 3>;
+			};
+
+			spi1_g61_default: spi1_g61_default {
+				pinmux = <61 3>;
+			};
+
+			spi1_g62_default: spi1_g62_default {
+				pinmux = <62 3>;
+			};
+
+			spi1_g63_default: spi1_g63_default {
+				pinmux = <63 3>;
+			};
+
+			/*
+			 * SPI2 pins on their main function - the vendor device
+			 * tree's "spi2_pins" group decoded (G64 = clock,
+			 * G65 = miso, G66 = mosi). GPIO67, the fourth pin of
+			 * the group, stays a GPIO: the ls-spi-io block has no
+			 * chip select register, so its CS line is driven as a
+			 * plain GPIO (the controller's "cs-gpios").
+			 */
+			spi2_g64_default: spi2_g64_default {
+				pinmux = <64 3>;
+			};
+
+			spi2_g65_default: spi2_g65_default {
+				pinmux = <65 3>;
+			};
+
+			spi2_g66_default: spi2_g66_default {
+				pinmux = <66 3>;
+			};
 		};
 
 		/*
@@ -336,9 +395,13 @@
 		 * I2S controller ("IIS", user manual chapter 11): one stereo
 		 * interface with an 8 byte FIFO per direction, an integer bit
 		 * clock divider and a fractional divider for the codec system
-		 * clock. Its interrupt is EIOINTC vector 24 (flat IRQ 40); the
-		 * driver polls the FIFOs - see the binding - so the node carries
-		 * no interrupt property.
+		 * clock (MCLK) that the bit clock is derived from.
+		 *
+		 * Its interrupt is EIOINTC vector 24 (flat IRQ 40); the block's
+		 * interrupt sources stay unused - they report FIFO
+		 * overflow/underflow, which cannot pace a stream - so the node
+		 * carries no interrupt property. The data path is paced by the
+		 * DMA controller below instead.
 		 *
 		 * Kept disabled here: the five interface pins (GPIO76 MCLK,
 		 * GPIO77 BCLK, GPIO78 LR, GPIO79 data in, GPIO80 data out) are
@@ -351,7 +414,136 @@
 			reg = <0x80000000 0x16114000 0x0 0x4000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+			/*
+			 * The clock both dividers count against (the bit clock
+			 * ratio in IISConfig0, the system clock ratio in
+			 * IISConfig1). The manual calls it the "bus clock" and
+			 * the vendor device tree carries clock-frequency =
+			 * <100000000> for this node; on this board the clock
+			 * controller reports exactly that - 100 MHz - for
+			 * LS2K0300_CLK_I2S (the NODE PLL branch of the
+			 * controller), while LS2K0300_CLK_APB, the bus clock of
+			 * the UART/I2C/... peripherals, is 200 MHz. The vendor's
+			 * own config1 math divides that 100 MHz down to its
+			 * 128 fs system clock, which is the same number, so this
+			 * property points at the I2S clock.
+			 *
+			 * If a board turns out to divide another clock, pointing
+			 * this property at it is the single change needed - the
+			 * driver just reads "clocks".
+			 */
 			clocks = <&clk LS2K0300_CLK_I2S>;
+			/*
+			 * The DMA controller moves the data: its transmit request
+			 * is wired to channel 1 and its receive request to channel
+			 * 0, which is the mapping the vendor device tree uses
+			 * ("dmas = <&dma 0 0xaf>, <&dma 1 0xbf>"). There is no
+			 * request select register, so these two numbers are all
+			 * there is to get right.
+			 */
+			loongson,dmas = <&lsia_dma 1 0>;
+			status = "disabled";
+		};
+
+		/*
+		 * LSIA DMA controller, "dma@1612c000" in the vendor tree
+		 * (compatible "loongson,lsia-dma"): eight channels, four
+		 * registers each 0x14 apart - CCR at 0x08, CNDTR at 0x0c, CPAR at
+		 * 0x10, CMAR at 0x14 - plus two status registers at 0x00/0x04
+		 * holding a four bit nibble per channel (transfer complete in
+		 * bit 1, half transfer in bit 2). The vendor kernel drives it
+		 * through drivers/dma/lsia_dma.c, this port through
+		 * drivers/dma/dma_loongson_lsia.c.
+		 *
+		 * The data requests are wired to fixed channels - the I2S
+		 * transmit on channel 1 and its receive on channel 0 - and the
+		 * controller has no request select register, so a consumer
+		 * names its channel and nothing else (the "loongson,dmas"
+		 * property of the I2S node carries both of its channels for
+		 * that driver).
+		 */
+		lsia_dma: dma@800000001612c000 {
+			compatible = "loongson,lsia-dma";
+			reg = <0x80000000 0x1612c000 0x0 0x100>;
+			/*
+			 * One interrupt line per channel: APB-DMA0..7 on vectors
+			 * 45..52 of table 3-48 - 61..68 in the flat, SoC wide
+			 * numbering this port carries in "interrupts". Confirmed
+			 * on hardware: with the channels running, the EIOINTC's
+			 * raw, enable-independent status latches exactly vector
+			 * 46 (channel 1) while channel 0's expected bit stays
+			 * clear. (The vendor tree lists the same lines as
+			 * liointc0 inputs 23..30 - those legacy numbers are not
+			 * this controller's vectors; a translation read off
+			 * liointc input arithmetic put the channels on 23..30
+			 * once and the board silently disagreed.)
+			 */
+			interrupt-parent = <&eiointc>;
+			interrupts = <61 1>, <62 1>, <63 1>, <64 1>,
+				     <65 1>, <66 1>, <67 1>, <68 1>;
+			dma-channels = <8>;
+			#dma-cells = <2>;
+			/* The namespaced form, for the "loongson,dmas" property */
+			#loongson,dma-cells = <2>;
+			status = "okay";
+		};
+
+		/*
+		 * SPI0/SPI1, "spi@0x16010000"/"spi@0x16018000" of the vendor
+		 * device tree (compatible "loongson,ls-spi", user manual
+		 * chapter 9): a simple polled SPI master with a one byte FIFO
+		 * port, four hardware chip selects and the APB/DEVS clock
+		 * (200 MHz on this board) as its divider input, so SCLK runs
+		 * from 100 MHz down to about 49 kHz.
+		 *
+		 * The same block also drives a memory-mapped flash window
+		 * (SPI0 boot at 0x1c000000, MEM at 0x10000000) that u-boot uses
+		 * for XIP; the driver leaves SFC_PARAM.memory_en cleared and
+		 * drives the bus purely through the IO registers. The two
+		 * "loongson,ls-spi-io" blocks (SPI2 @0x1610c000, SPI3
+		 * @0x1610e000) are a different register file (CR1..CR3, CFG1..3)
+		 * and are not modelled here.
+		 */
+		spi0: spi@8000000016010000 {
+			compatible = "loongson,ls-spi";
+			reg = <0x80000000 0x16010000 0x0 0x10>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			clock-names = "apb";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <86 1>; /* vector 70, table 3-48 */
+			status = "disabled";
+		};
+
+		spi1: spi@8000000016018000 {
+			compatible = "loongson,ls-spi";
+			reg = <0x80000000 0x16018000 0x0 0x10>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			clock-names = "apb";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupt-parent = <&eiointc>;
+			interrupts = <87 1>; /* vector 71, table 3-48 */
+			status = "disabled";
+		};
+
+		/*
+		 * SPI2, "spi@0x1610c000" of the vendor device tree
+		 * (compatible "loongson,ls-spi-io"): the second register file
+		 * (user manual chapter 10) - 32 bit registers, one byte per
+		 * CSTART transfer, and no hardware chip selects (a board
+		 * drives its CS lines as plain GPIOs through "cs-gpios").
+		 * SPI3 (0x1610e000) is the same design and is left out until a
+		 * board needs it.
+		 */
+		spi2: spi@800000001610c000 {
+			compatible = "loongson,ls-spi-io";
+			reg = <0x80000000 0x1610c000 0x0 0x2000>;
+			clocks = <&clk LS2K0300_CLK_APB>;
+			clock-names = "apb";
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "disabled";
 		};
 

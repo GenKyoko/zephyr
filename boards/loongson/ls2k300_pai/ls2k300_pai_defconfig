@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 CONFIG_CONSOLE=y
@@ -31,11 +30,14 @@ CONFIG_RTC=y
 # through the "loongson,ls2k-pwm-timer" child of the "timers1" block.
 CONFIG_PWM=y
 
-# I2S: the board brings out the four interface pins of the controller. The
-# codec of the board (an ES8388 on i2c2) has no Zephyr driver yet, so the
-# controller is used for register level checks and for the digital loopback test
-# in which data out is jumpered to data in.
+# I2S: the board brings out the four interface pins of the controller.
 CONFIG_I2S=y
+
+# The board's audio codec is an ES8388 on i2c2, with the I2S controller as the
+# master of the link. The audio codec class sits inside the "Audio drivers"
+# menu, so that switch has to be on as well.
+CONFIG_AUDIO=y
+CONFIG_AUDIO_CODEC=y
 
 # GPIO + gpio-leds (LED0 on GPIO43 = gpio1 pin 11)
 CONFIG_GPIO=y

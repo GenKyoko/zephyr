@@ -1,0 +1,28 @@
+# Loongson LSIA DMA Driver configuration
+
+# SPDX-License-Identifier: Apache-2.0
+
+config DMA_LOONGSON_LSIA
+	bool "Loongson LSIA DMA controller driver"
+	default y
+	depends on DT_HAS_LOONGSON_LSIA_DMA_ENABLED
+	help
+	  Enable the eight channel DMA controller of the Loongson 2K0300
+	  ("loongson,lsia-dma", user manual chapter 12), whose data requests
+	  are wired to fixed channels - the I2S transmit on channel 1 and its
+	  receive on channel 0. One interrupt line per channel.
+
+if DMA_LOONGSON_LSIA
+
+config DMA_LOONGSON_LSIA_INIT_PRIORITY
+	int "Loongson LSIA DMA init priority"
+	default 50
+	help
+	  The channel interrupts are routed through the EIOINTC, whose
+	  initialization masks every vector before it registers itself - a
+	  driver that enables its lines earlier silently loses them (the
+	  arch_irq_enable() of an unregistered secondary controller does
+	  nothing). This has to sit after CONFIG_INTC_INIT_PRIORITY; the
+	  default does, with the EIOINTC at its default 40.
+
+endif

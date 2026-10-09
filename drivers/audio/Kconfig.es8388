@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config AUDIO_CODEC_ES8388
+	bool "Everest ES8388 codec driver"
+	default y
+	select I2C
+	depends on DT_HAS_EVEREST_ES8388_ENABLED
+	help
+	  Enable the driver for the Everest ES8388 stereo audio codec, whose
+	  control interface is I2C and whose data interface is I2S.
+
+	  The register model follows the ES8328, which is also what Linux drives
+	  for the "everest,es8388" compatible. Playback (DAC) and capture (ADC)
+	  are implemented with I2S/left/right justified formats, 16/18/20/24/32
+	  bit words, the sample rates of a 12.288 MHz and an 11.2896 MHz system
+	  clock, master or target role, and output/input volume and mute.
